@@ -30,15 +30,15 @@ steps:
 
 ### Triggers
 
-| Trigger | Set by | Typical source |
-|---------|--------|----------------|
-| `merge` | `BOXCI_TRIGGER=merge` | Garden merge webhook, push to `main` |
-| `issue` | `BOXCI_TRIGGER=issue` | Garden issue webhook, poll dispatch |
-| `poll` | `BOXCI_TRIGGER=poll` | `POST /api/poll`, systemd timer (10m) |
+| Trigger | Set by | Handler |
+|---------|--------|---------|
+| `merge` | `BOXCI_TRIGGER=merge` | Repo `.boxci/pipeline.yml` (`on: merge`) |
+| `issue` | Garden issue webhook / poll dispatch | **Builtin** — cursor-agent → Radicle patch |
+| `poll` | `POST /api/poll`, systemd timer | **Builtin** — list issue COBs, dispatch agents |
 
-When `on:` is present, the pipeline runs only if the incoming trigger matches.
+Merge builds use your repo's `.boxci` steps. Issue and poll are **built into boxci** — repos do not need `on: issue` / `on: poll` or poll/agent steps in `.boxci`.
 
-Issue/poll runs also set `RADICLE_TRIGGER` and `RADICLE_ISSUE_ID` so repos can reuse `scripts/buildkite/*` unchanged (`BUILDKITE_COMMIT` / `BUILDKITE_BRANCH` are mirrored from the checkout tip).
+Repos may optionally ship `scripts/buildkite/run-issue-agent.sh` for a custom agent prompt; otherwise boxci runs its bundled script from `runner/boxci/scripts/`.
 
 ### Server-provided env
 
@@ -112,12 +112,12 @@ adapter scripts.
 
 | `x-radicle-event-type` | Payload shape | boxci action |
 |------------------------|---------------|--------------|
-| `push` / `branch_updated` | `after` + `branch: main` + `repository` | **Merge build** (`on: merge`) |
-| `push` on `main`, `after` is issue COB | same | **Issue agent** (`on: issue`) — auto-routed |
+| `push` / `branch_updated` | `after` + `branch: main` + `repository` | **Merge build** — repo `.boxci` (`on: merge`) |
+| `push` on `main`, `after` is issue COB | same | **Issue agent** (builtin) — auto-routed |
 | `push` on non-`main` branch | `after` + `branch: issue/…` | **Ignored** |
 | `patch_created` / `patch_updated` | `patch` + `repository` | **Ignored** |
 | `branch_deleted` | `deleted: true` or delete payload | **Ignored** |
-| Poll / schedule | — | `POST /api/poll` or systemd timer (not a Garden webhook) |
+| Poll / schedule | — | `POST /api/poll` (builtin, not Garden webhook) |
 
 Branch names may include a namespace prefix (`<nid>/refs/heads/main`); boxci normalizes to
 `main`.
@@ -166,15 +166,22 @@ If the webhooks adapter pipes to a script instead of a URL, use
 `sleek/scripts/boxci/webhook-to-boxci.sh` (forwards broker or Garden JSON; pass
 `X-Boxci-Secret` when `BOXCI_WEBHOOK_SECRET` is set).
 
-### Issue → cursor-agent → patch
+### Issue → cursor-agent → patch (builtin)
 
-Mirrors Buildkite's `RADICLE_TRIGGER=issue|poll` flow:
+boxci ships a built-in Radicle issue workflow. No repo `.boxci` steps required.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `POST /api/webhooks/garden/issue` | New issue COB → run `on: issue` steps |
-| `POST /api/poll` | Poll pending issues → run `on: poll` (lists COBs, dispatches agents) |
-| `POST /api/webhooks/garden` | Merge builds; **auto-routes** issue COB commits to the issue handler |
+| `POST /api/webhooks/garden` | Merge builds; **auto-routes** issue COB commits to the builtin agent |
+| `POST /api/webhooks/garden/issue` | Explicit issue COB → builtin agent |
+| `POST /api/poll` | List issue COBs via `git ls-remote`, skip `issue/<short7>` branches, dispatch agents |
+| `POST /api/runs/from-repo` | Manual trigger with `"trigger":"issue"` and `"issue_id"` |
+
+**Poll idempotency:** skips issues that already have a remote branch `issue/<short7>`.
+
+**Agent script resolution:**
+1. Repo `scripts/buildkite/run-issue-agent.sh` if present (custom prompt, e.g. sleek)
+2. Else boxci bundled `runner/boxci/scripts/run-issue-agent.sh`
 
 Issue webhook payload:
 
@@ -230,9 +237,9 @@ BOXCI_WORKSPACE_z9mjPzpVK472QXaaP1picc5U9xBR=/home/boxd/sleek
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Liveness |
-| `POST /api/webhooks/garden` | Garden merge webhook → repo `.boxci` |
-| `POST /api/webhooks/garden/issue` | Garden issue open → `on: issue` agent |
-| `POST /api/poll` | Issue poll → `on: poll` |
+| `POST /api/webhooks/garden` | Garden merge webhook → repo `.boxci` merge steps |
+| `POST /api/webhooks/garden/issue` | Garden issue open → **builtin** cursor-agent |
+| `POST /api/poll` | Issue poll → **builtin** (list COBs, dispatch agents) |
 | `POST /api/runs/from-repo` | Manual trigger with `repo_url`, `sha`, `trigger` |
 | `POST /api/runs` | Legacy central pipelines in `pipelines/` |
 | `GET /api/runs` | List recent runs |
@@ -273,7 +280,9 @@ curl -X POST http://localhost:8080/api/runs \
 3. Register Garden webhook → `https://boxci.boxd.sh/api/webhooks/garden`.
 4. (Optional) Set `NIXBUILD_TOKEN` or `OPENBAO_TOKEN` on the boxci VM for remote Nix builds.
 
-**sleek** example: [`.boxci/pipeline.yml`](https://github.com/codegod100/sleek) — check, APK, Flatpak on merge.
+Issue → patch runs automatically via boxci builtins (webhook + 10m poll timer). No extra `.boxci` steps needed.
+
+**sleek** example: `.boxci/pipeline.yml` — check, APK, Flatpak on merge only; issue agent uses `scripts/buildkite/run-issue-agent.sh`.
 
 ## Project layout
 
@@ -281,6 +290,8 @@ curl -X POST http://localhost:8080/api/runs \
 |------|---------|
 | `flake.nix` | Nix package + dev shell + apps |
 | `runner/boxci/` | Pipeline runner, repo checkout, HTTP server |
+| `runner/boxci/issue_agent.py` | Builtin issue poll + cursor-agent dispatch |
+| `runner/boxci/scripts/` | Bundled issue-agent scripts (bootstrap, delegate, …) |
 | `pipelines/` | Legacy central pipelines (deprecated for repo-local `.boxci`) |
 | `deploy/` | boxd deployment helpers |
 

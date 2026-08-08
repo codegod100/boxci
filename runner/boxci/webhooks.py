@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from boxci.issue_agent import run_issue_agent, run_poll
 from boxci.repo import (
     checkout_repo,
     find_pipeline_file,
@@ -96,9 +97,35 @@ def trigger_from_repo(
     issue_id: str | None = None,
     dry_run: bool = False,
     async_run: bool = False,
-) -> tuple[Path, dict[str, str], RunResult]:
-    """Checkout repo, locate .boxci pipeline, and run it."""
+) -> tuple[Path | str, dict[str, str], RunResult]:
+    """Checkout repo and run merge pipeline or builtin issue/poll handlers."""
     branch = branch or _default_branch()
+
+    if trigger == "issue":
+        if not issue_id:
+            raise ValueError("issue_id required for trigger=issue")
+        script, env, run = run_issue_agent(
+            boxci_root=boxci_root,
+            repo_url=repo_url,
+            branch=branch,
+            repo_id=repo_id,
+            issue_id=issue_id,
+            dry_run=dry_run,
+            async_run=async_run,
+        )
+        return script, env, run
+
+    if trigger == "poll":
+        poll_result = run_poll(
+            boxci_root=boxci_root,
+            repo_url=repo_url,
+            branch=branch,
+            repo_id=repo_id,
+            dry_run=dry_run,
+            async_run=async_run,
+        )
+        return poll_result["script"], poll_result["env"], poll_result["run"]
+
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
 
@@ -194,7 +221,7 @@ def handle_garden_webhook(
     if not repo_url:
         return {"ignored": True, "reason": "could not resolve repo clone URL"}
 
-    # Issue COB roots have no .boxci at that commit — route to issue handler.
+    # Issue COB roots have no .boxci at that commit — route to builtin issue handler.
     if issue_cob_exists(commit, repo_url=repo_url):
         return handle_garden_issue_webhook(body, boxci_root=boxci_root)
 
@@ -221,7 +248,7 @@ def handle_garden_issue_webhook(
     boxci_root: Path,
     header_event: str = "",
 ) -> dict[str, Any]:
-    """Garden issue open → checkout main + run issue agent (.boxci on: issue)."""
+    """Garden issue open → builtin cursor-agent → Radicle patch."""
     parsed = parse_garden_payload(body, header_event=header_event)
     branch = parsed["branch"] or _default_branch()
     repo_id = parsed["repo"] or _default_repo_id()
@@ -244,23 +271,22 @@ def handle_garden_issue_webhook(
         }
 
     dry_run = _dry_run_requested(body)
-    pipeline_path, env, run = trigger_from_repo(
+    script, env, run = run_issue_agent(
         boxci_root=boxci_root,
         repo_url=repo_url,
-        trigger="issue",
-        sha=None,
         branch=branch,
-        repo_id=repo_id,
+        repo_id=repo_id or None,
         issue_id=issue_id,
         dry_run=dry_run,
         async_run=_should_run_async("issue"),
     )
     return {
         "ignored": False,
-        "pipeline": str(pipeline_path),
+        "pipeline": str(script),
         "env": env,
         "run": run,
         "issue_id": issue_id,
+        "builtin": True,
     }
 
 
@@ -270,17 +296,15 @@ def handle_poll(
     boxci_root: Path,
     header_event: str = "",
 ) -> dict[str, Any]:
-    """Scheduled / manual poll → run .boxci on: poll (lists issues, dispatches agents)."""
+    """Scheduled / manual poll → builtin issue list + agent dispatch."""
     repo_id, repo_url, branch = _resolve_repo(body, header_event=header_event)
     if not repo_url:
         return {"ignored": True, "reason": "repo_url required (or set BOXCI_DEFAULT_REPO_URL)"}
 
     dry_run = _dry_run_requested(body)
-    pipeline_path, env, run = trigger_from_repo(
+    poll_result = run_poll(
         boxci_root=boxci_root,
         repo_url=repo_url,
-        trigger="poll",
-        sha=None,
         branch=branch,
         repo_id=repo_id or None,
         dry_run=dry_run,
@@ -288,9 +312,16 @@ def handle_poll(
     )
     return {
         "ignored": False,
-        "pipeline": str(pipeline_path),
-        "env": env,
-        "run": run,
+        "pipeline": str(poll_result["script"]),
+        "env": poll_result["env"],
+        "run": poll_result["run"],
+        "poll": {
+            "total_issues": poll_result["total_issues"],
+            "pending": poll_result["pending"],
+            "skipped": poll_result["skipped"],
+            "dispatched": poll_result["dispatched"],
+        },
+        "builtin": True,
     }
 
 

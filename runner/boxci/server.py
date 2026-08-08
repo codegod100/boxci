@@ -77,6 +77,10 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
     }
     if "issue_id" in result:
         payload["issue_id"] = result["issue_id"]
+    if "poll" in result:
+        payload["poll"] = result["poll"]
+    if result.get("builtin"):
+        payload["builtin"] = True
     if accepted:
         payload["accepted"] = True
     return jsonify(payload), status
@@ -100,8 +104,8 @@ pre{background:#111;color:#eee;padding:1rem;overflow:auto;border-radius:8px}
 <li><code>POST /api/runs</code> — run a central pipeline <code>{"pipeline":"example.yml","env":{}}</code></li>
 <li><code>POST /api/runs/from-repo</code> — checkout repo + run its <code>.boxci</code></li>
 <li><code>POST /api/webhooks/garden</code> — Garden merge webhook (auto-routes issue COBs)</li>
-<li><code>POST /api/webhooks/garden/issue</code> — Garden issue open → cursor-agent</li>
-<li><code>POST /api/poll</code> — scheduled issue poll (<code>on: poll</code>)</li>
+<li><code>POST /api/webhooks/garden/issue</code> — Garden issue open → builtin cursor-agent</li>
+<li><code>POST /api/poll</code> — scheduled issue poll (builtin — lists COBs, dispatches agents)</li>
 <li><code>GET /api/runs</code> — list runs</li>
 <li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
 </ul>
