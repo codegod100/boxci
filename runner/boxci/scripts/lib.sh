@@ -306,6 +306,29 @@ bk_boxci_base_url() {
   echo "${BOXCI_BASE_URL:-https://boxci.boxd.sh}"
 }
 
+# Garden / public explorer link (issues, patches). Template uses $host, $rid, $path —
+# see rad profile publicExplorer (default: radicle.network/nodes/$host/$rid$path).
+bk_garden_explorer_url() {
+  local path=$1
+  local rid=${2:-${BK_REPORT_RID:-${RADICLE_RID:-}}}
+  local seed_host template
+
+  [[ "$path" == /* ]] || path="/${path}"
+  seed_host="${BK_REPORT_GARDEN_HOST:-${RADICLE_GARDEN_HOST:-nandi.radicle.garden}}"
+
+  template="${RADICLE_PUBLIC_EXPLORER:-https://radicle.network/nodes/\$host/\$rid\$path}"
+
+  if [[ -n "$rid" && "$rid" != rad:* ]]; then
+    rid="${rid#rad://}"
+    rid="rad:${rid}"
+  fi
+
+  template="${template//\$host/$seed_host}"
+  template="${template//\$rid/$rid}"
+  template="${template//\$path/$path}"
+  echo "$template"
+}
+
 # Summarize cursor-agent JSON/text output when no patch was opened.
 bk_agent_decline_reason() {
   local agent_out=${1:-}
@@ -321,6 +344,9 @@ import sys
 raw = sys.argv[1]
 
 def clean(text: str) -> str:
+    # Drop markdown links/URLs so truncation cannot bisect a 40-char issue id.
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    text = re.sub(r"https?://\S+", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > 400:
         text = text[:397].rstrip() + "..."
@@ -366,13 +392,11 @@ PY
 # Expects BK_REPORT_* env (set by run-issue-agent.sh) for issue/run/repo context.
 bk_issue_agent_comment() {
   local outcome=$1 reason=$2 patch_id=${3:-}
-  local issue_id run_id base_url garden_host rid_naked rid message tmp rc
+  local issue_id run_id base_url rid message tmp rc
 
   issue_id="${BK_REPORT_ISSUE_ID:-${RADICLE_ISSUE_ID:-}}"
   run_id="${BK_REPORT_RUN_ID:-${BOXCI_RUN_ID:-unknown}}"
   base_url="$(bk_boxci_base_url)"
-  garden_host="${BK_REPORT_GARDEN_HOST:-${RADICLE_GARDEN_HOST:-nandi.radicle.garden}}"
-  rid_naked="${BK_REPORT_RID_NAKED:-}"
   rid="${BK_REPORT_RID:-${RADICLE_RID:-}}"
 
   if [[ -z "$issue_id" ]]; then
@@ -384,11 +408,6 @@ bk_issue_agent_comment() {
     return 0
   fi
 
-  if [[ -z "$rid_naked" && -n "$rid" ]]; then
-    rid_naked="${rid#rad:}"
-    rid_naked="${rid_naked#rad://}"
-  fi
-
   message=$(cat <<EOF
 **boxci issue agent** · run \`${run_id}\`
 
@@ -396,8 +415,11 @@ bk_issue_agent_comment() {
 **Reason:** ${reason}
 EOF
 )
-  if [[ -n "$patch_id" && -n "$rid_naked" ]]; then
-    message+=$'\n'"**Patch:** https://${garden_host}/${rid_naked}/patches/${patch_id}"
+  if [[ -n "$rid" ]]; then
+    message+=$'\n'"**Issue:** $(bk_garden_explorer_url "/issues/${issue_id}" "$rid")"
+  fi
+  if [[ -n "$patch_id" && -n "$rid" ]]; then
+    message+=$'\n'"**Patch:** $(bk_garden_explorer_url "/patches/${patch_id}" "$rid")"
   fi
   message+=$'\n'"**Run:** ${base_url}/api/runs/${run_id} · [dashboard](${base_url}/)"
 

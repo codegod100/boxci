@@ -228,7 +228,7 @@ write_radicle_config() {
   seeds_json="$(radicle_seeds_json_array)"
   cat >"$RAD_HOME/config.json" <<EOF
 {
-  "publicExplorer": "https://nandi.radicle.garden/nodes/\$host/\$rid\$path",
+  "publicExplorer": "https://radicle.network/nodes/\$host/\$rid\$path",
   "preferredSeeds": ${seeds_json},
   "node": {
     "alias": "sleek-ci",

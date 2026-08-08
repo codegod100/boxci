@@ -113,7 +113,7 @@ fi
 echo "cursor-agent: $(command -v "$(bk_cursor_agent_cmd)")"
 
 ISSUE_SHORT="$(bk_short_id "$RADICLE_ISSUE_ID")"
-ISSUE_LINK="https://${GARDEN_HOST}/${RID_NAKED}/issues/${RADICLE_ISSUE_ID}"
+ISSUE_LINK="$(bk_garden_explorer_url "/issues/${RADICLE_ISSUE_ID}" "$RADICLE_RID")"
 PATCH_TITLE="Fix: ${RADICLE_ISSUE_TITLE}"
 ISSUE_BODY_TEXT="${RADICLE_ISSUE_BODY:-*(no description)*}"
 PATCH_DESCRIPTION=$(cat <<EOF
