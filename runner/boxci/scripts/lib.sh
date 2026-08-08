@@ -16,6 +16,12 @@ bk_export_cursor_path() {
   export PATH="${HOME}/.cursor/bin:${HOME}/.local/bin:/usr/local/bin:${PATH:-}"
 }
 
+bk_export_rad_path() {
+  local rad_home="${RAD_HOME:-${HOME}/.radicle}"
+  export RAD_HOME="$rad_home"
+  export PATH="${rad_home}/bin:${PATH:-}"
+}
+
 # Resolve cursor-agent CLI name after PATH is set. Prints binary name or returns 1.
 bk_cursor_agent_cmd() {
   if command -v cursor-agent >/dev/null 2>&1; then
@@ -294,4 +300,122 @@ bk_annotate() {
   if command -v buildkite-agent >/dev/null 2>&1; then
     buildkite-agent annotate "$message" --style "$style" --context "radicle-issue-agent" || true
   fi
+}
+
+bk_boxci_base_url() {
+  echo "${BOXCI_BASE_URL:-https://boxci.boxd.sh}"
+}
+
+# Summarize cursor-agent JSON/text output when no patch was opened.
+bk_agent_decline_reason() {
+  local agent_out=${1:-}
+  [[ -n "$agent_out" ]] || {
+    echo "Agent completed without opening a patch."
+    return 0
+  }
+  python3 - "$agent_out" <<'PY'
+import json
+import re
+import sys
+
+raw = sys.argv[1]
+
+def clean(text: str) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > 400:
+        text = text[:397].rstrip() + "..."
+    return text
+
+# Prefer structured cursor-agent JSON when delegate uses --output-format json.
+try:
+    data = json.loads(raw)
+except json.JSONDecodeError:
+    data = None
+
+if isinstance(data, dict):
+    for key in ("result", "text", "message", "output", "response"):
+        val = data.get(key)
+        if isinstance(val, str) and val.strip():
+            print(clean(val))
+            sys.exit(0)
+    if isinstance(data.get("messages"), list):
+        for msg in reversed(data["messages"]):
+            if not isinstance(msg, dict):
+                continue
+            for key in ("text", "content", "message"):
+                val = msg.get(key)
+                if isinstance(val, str) and val.strip():
+                    print(clean(val))
+                    sys.exit(0)
+
+# Fallback: last non-empty line that looks like agent prose (not JSON noise).
+lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+for ln in reversed(lines):
+    if ln.startswith("{") or ln.startswith("[") or ln.startswith("error:"):
+        continue
+    if re.match(r"^[●○│╭╰]", ln):
+        continue
+    print(clean(ln))
+    sys.exit(0)
+
+print("Agent completed without opening a patch.")
+PY
+}
+
+# Post a boxci issue-agent summary comment on the Radicle issue.
+# Expects BK_REPORT_* env (set by run-issue-agent.sh) for issue/run/repo context.
+bk_issue_agent_comment() {
+  local outcome=$1 reason=$2 patch_id=${3:-}
+  local issue_id run_id base_url garden_host rid_naked rid message tmp rc
+
+  issue_id="${BK_REPORT_ISSUE_ID:-${RADICLE_ISSUE_ID:-}}"
+  run_id="${BK_REPORT_RUN_ID:-${BOXCI_RUN_ID:-unknown}}"
+  base_url="$(bk_boxci_base_url)"
+  garden_host="${BK_REPORT_GARDEN_HOST:-${RADICLE_GARDEN_HOST:-nandi.radicle.garden}}"
+  rid_naked="${BK_REPORT_RID_NAKED:-}"
+  rid="${BK_REPORT_RID:-${RADICLE_RID:-}}"
+
+  if [[ -z "$issue_id" ]]; then
+    echo "warn: bk_issue_agent_comment skipped — no issue id" >&2
+    return 0
+  fi
+  if ! command -v rad >/dev/null 2>&1; then
+    echo "warn: bk_issue_agent_comment skipped — rad CLI not on PATH" >&2
+    return 0
+  fi
+
+  if [[ -z "$rid_naked" && -n "$rid" ]]; then
+    rid_naked="${rid#rad:}"
+    rid_naked="${rid_naked#rad://}"
+  fi
+
+  message=$(cat <<EOF
+**boxci issue agent** · run \`${run_id}\`
+
+**Outcome:** ${outcome}
+**Reason:** ${reason}
+EOF
+)
+  if [[ -n "$patch_id" && -n "$rid_naked" ]]; then
+    message+=$'\n'"**Patch:** https://${garden_host}/${rid_naked}/patches/${patch_id}"
+  fi
+  message+=$'\n'"**Run:** ${base_url}/api/runs/${run_id} · [dashboard](${base_url}/)"
+
+  tmp="$(mktemp)"
+  printf '%s\n' "$message" >"$tmp"
+  set +e
+  if [[ -n "$rid" ]]; then
+    rad issue comment "$issue_id" --message "$(cat "$tmp")" -r "$rid" 2>&1
+  else
+    rad issue comment "$issue_id" --message "$(cat "$tmp")" 2>&1
+  fi
+  rc=$?
+  set -e
+  rm -f "$tmp"
+  if [[ $rc -ne 0 ]]; then
+    echo "warn: rad issue comment failed (exit $rc)" >&2
+    return "$rc"
+  fi
+  echo "Posted issue comment (${outcome}) on ${issue_id:0:7}"
+  return 0
 }

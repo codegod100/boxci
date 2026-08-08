@@ -55,19 +55,7 @@ echo "issue:  $RADICLE_ISSUE_ID"
 echo "title:  $RADICLE_ISSUE_TITLE"
 echo "branch: $RADICLE_ISSUE_BRANCH"
 
-if git show-ref --verify --quiet "refs/heads/$RADICLE_ISSUE_BRANCH"; then
-  msg="Branch \`$RADICLE_ISSUE_BRANCH\` already exists — skipping duplicate agent run."
-  echo "$msg"
-  exit 0
-fi
-
-bash "$SCRIPT_DIR/bootstrap.sh"
-bk_export_cursor_path
-if ! bk_cursor_agent_cmd >/dev/null; then
-  bk_die "cursor-agent / agent not found on PATH after bootstrap (PATH=$PATH)"
-fi
-echo "cursor-agent: $(command -v "$(bk_cursor_agent_cmd)")"
-
+BOXCI_RUN_ID="${BOXCI_RUN_ID:-unknown}"
 RADICLE_RID="${RADICLE_RID:-${BOXCI_REPO_ID:-}}"
 if [[ -z "$RADICLE_RID" && -n "${BOXCI_REPO_SLUG:-}" ]]; then
   RADICLE_RID="rad:${BOXCI_REPO_SLUG}"
@@ -75,6 +63,55 @@ fi
 GARDEN_HOST="${RADICLE_GARDEN_HOST:-nandi.radicle.garden}"
 RID_NAKED="${RADICLE_RID#rad:}"
 RID_NAKED="${RID_NAKED#rad://}"
+
+export BK_REPORT_ISSUE_ID="$RADICLE_ISSUE_ID"
+export BK_REPORT_RUN_ID="$BOXCI_RUN_ID"
+export BK_REPORT_GARDEN_HOST="$GARDEN_HOST"
+export BK_REPORT_RID_NAKED="$RID_NAKED"
+export BK_REPORT_RID="$RADICLE_RID"
+
+ISSUE_AGENT_REPORTED=0
+_issue_agent_report() {
+  local outcome=$1 reason=$2 patch_id=${3:-} exit_code=${4:-0}
+  if [[ "$ISSUE_AGENT_REPORTED" == "1" ]]; then
+    exit "$exit_code"
+  fi
+  ISSUE_AGENT_REPORTED=1
+  trap - ERR
+  bk_issue_agent_comment "$outcome" "$reason" "$patch_id" || true
+  exit "$exit_code"
+}
+
+_on_issue_agent_err() {
+  local rc=$?
+  if [[ "$ISSUE_AGENT_REPORTED" == "1" ]]; then
+    exit "$rc"
+  fi
+  ISSUE_AGENT_REPORTED=1
+  trap - ERR
+  bk_issue_agent_comment "failed" "Issue agent exited unexpectedly (code ${rc})" "" || true
+  exit "$rc"
+}
+trap '_on_issue_agent_err' ERR
+
+if git show-ref --verify --quiet "refs/heads/$RADICLE_ISSUE_BRANCH"; then
+  msg="Branch \`$RADICLE_ISSUE_BRANCH\` already exists — skipping duplicate agent run."
+  echo "$msg"
+  bash "$SCRIPT_DIR/bootstrap.sh" || true
+  bk_export_rad_path
+  _issue_agent_report "skipped_duplicate" "$msg" "" 0
+fi
+
+if ! bash "$SCRIPT_DIR/bootstrap.sh"; then
+  _issue_agent_report "failed" "Bootstrap failed (Radicle identity or Cursor CLI setup)" "" 1
+fi
+bk_export_cursor_path
+bk_export_rad_path
+if ! bk_cursor_agent_cmd >/dev/null; then
+  _issue_agent_report "failed" "cursor-agent / agent not found on PATH after bootstrap (PATH=$PATH)" "" 1
+fi
+echo "cursor-agent: $(command -v "$(bk_cursor_agent_cmd)")"
+
 ISSUE_SHORT="$(bk_short_id "$RADICLE_ISSUE_ID")"
 ISSUE_LINK="https://${GARDEN_HOST}/${RID_NAKED}/issues/${RADICLE_ISSUE_ID}"
 PATCH_TITLE="Fix: ${RADICLE_ISSUE_TITLE}"
@@ -169,20 +206,24 @@ echo "$agent_out"
 
 if [[ "$agent_rc" -ne 0 ]]; then
   echo "cursor-agent failed (exit $agent_rc)" >&2
-  exit "$agent_rc"
+  _issue_agent_report "failed" "cursor-agent exited with code ${agent_rc}" "" "$agent_rc"
 fi
 
 PATCH_ID=""
 PATCH_ID=$(echo "$agent_out" | grep -oE 'patches/[0-9a-f]{7,40}|Patch[[:space:]]+[0-9a-f]{7,40}|"patch_id"[[:space:]]*:[[:space:]]*"[0-9a-f]+"' | grep -oE '[0-9a-f]{7,40}' | head -1 || true)
 
-if [[ -n "$PATCH_ID" ]] && command -v rad >/dev/null 2>&1; then
-  patch_show=$(rad patch show "$PATCH_ID" 2>/dev/null || true)
-  if echo "$patch_show" | grep -qF "$ISSUE_LINK"; then
-    echo "Patch ${PATCH_ID:0:7} already has structured description — skipping edit"
-  else
-    echo "=== Ensuring patch description (rad patch edit ${PATCH_ID:0:7}) ==="
-    rad patch edit "$PATCH_ID" -m "$PATCH_TITLE" -m "$PATCH_DESCRIPTION" --no-announce 2>&1 || true
+if [[ -n "$PATCH_ID" ]]; then
+  if command -v rad >/dev/null 2>&1; then
+    patch_show=$(rad patch show "$PATCH_ID" 2>/dev/null || true)
+    if echo "$patch_show" | grep -qF "$ISSUE_LINK"; then
+      echo "Patch ${PATCH_ID:0:7} already has structured description — skipping edit"
+    else
+      echo "=== Ensuring patch description (rad patch edit ${PATCH_ID:0:7}) ==="
+      rad patch edit "$PATCH_ID" -m "$PATCH_TITLE" -m "$PATCH_DESCRIPTION" --no-announce 2>&1 || true
+    fi
   fi
+  _issue_agent_report "patch_opened" "Opened patch \`${PATCH_ID:0:7}\` for issue \`${ISSUE_SHORT}\`." "$PATCH_ID" 0
 fi
 
-echo "=== Done ==="
+DECLINE_REASON="$(bk_agent_decline_reason "$agent_out")"
+_issue_agent_report "declined" "$DECLINE_REASON" "" 0

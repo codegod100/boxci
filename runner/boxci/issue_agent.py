@@ -44,10 +44,14 @@ def resolve_radicle_rid(repo_id: str | None, slug: str) -> str:
 
 
 def find_issue_agent_script(workspace: Path) -> Path:
+    # Builtin boxci scripts (comments, auth fixes) — repo buildkite copy is legacy fallback.
+    bundled = _SCRIPTS / "run-issue-agent.sh"
+    if bundled.is_file():
+        return bundled
     repo_script = workspace / _REPO_AGENT
     if repo_script.is_file():
         return repo_script
-    return _SCRIPTS / "run-issue-agent.sh"
+    return bundled
 
 
 def build_issue_env(
