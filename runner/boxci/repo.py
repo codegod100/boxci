@@ -122,10 +122,17 @@ def _garden_repo_fields(body: dict[str, Any]) -> tuple[str, str]:
     repo_url = ""
     repository = body.get("repository")
     if isinstance(repository, dict):
-        repo = str(repository.get("id") or "").strip()
+        repo = str(
+            repository.get("id")
+            or repository.get("rid")
+            or repository.get("full_name")
+            or repository.get("name")
+            or ""
+        ).strip()
         repo_url = str(
             repository.get("clone_url")
             or repository.get("http_url")
+            or repository.get("url")
             or ""
         ).strip()
         if not repo_url and repo:
