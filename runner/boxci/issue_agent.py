@@ -1,4 +1,4 @@
-"""Built-in Radicle issue poll + cursor-agent → patch (no repo .boxci steps required)."""
+"""Built-in Radicle issue → cursor-agent → patch (webhook/manual only; poll lists)."""
 
 from __future__ import annotations
 
@@ -16,10 +16,9 @@ from boxci.repo import (
     remote_branch_exists,
     repo_slug,
     resolve_repo_name,
-    resolve_repo_url,
 )
 from boxci.runner import RunResult, StepResult
-from boxci.runs import execute_pipeline, store_run
+from boxci.runs import store_run
 
 _SCRIPTS = Path(__file__).resolve().parent / "scripts"
 _REPO_AGENT = "scripts/buildkite/run-issue-agent.sh"
@@ -187,7 +186,13 @@ def run_poll(
     dry_run: bool = False,
     async_run: bool = False,
 ) -> dict[str, Any]:
-    """List issue COBs, skip branches that exist, dispatch issue agent runs."""
+    """List issue COBs for observability — never dispatch cursor-agent.
+
+    Agents only run when an issue COB itself triggers a Garden webhook (or an
+    explicit ``trigger=issue`` manual run). Poll must not start agents for
+    historical issues that merely lack an ``issue/<short>`` branch.
+    """
+    del dry_run, async_run  # retained for API compatibility; poll never dispatches
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
     checkout_repo(repo_url, workspace, branch=branch, sha=None)
@@ -203,84 +208,7 @@ def run_poll(
             continue
         pending.append(iid)
 
-    result: dict[str, Any] = {
-        "total_issues": len(issue_ids),
-        "pending": len(pending),
-        "skipped": [f"{i[:7]} (branch exists)" for i in skipped],
-        "dispatched": [],
-    }
-
-    if not pending:
-        env = build_issue_env(
-            trigger="poll",
-            workspace=workspace,
-            repo_url=repo_url,
-            slug=slug,
-            branch=branch,
-            sha=_git_head(workspace),
-            repo_id=repo_id,
-            dry_run=dry_run,
-        )
-        run = RunResult(
-            id=str(uuid.uuid4())[:8],
-            pipeline="builtin:poll",
-            status="passed",
-            started_at=time.time(),
-            finished_at=time.time(),
-            env=env,
-            steps=[
-                StepResult(
-                    key="poll",
-                    label="Poll issues",
-                    status="passed",
-                    exit_code=0,
-                    output=f"poll: {len(issue_ids)} issue(s), nothing to dispatch\n",
-                )
-            ],
-        )
-        result["run"] = run
-        result["env"] = env
-        result["script"] = str(_SCRIPTS / "poll")
-        return result
-
-    runs: list[RunResult] = []
-    for iid in pending:
-        if dry_run:
-            msg = f"poll: would dispatch {iid[:7]} ({iid})"
-            run = RunResult(
-                id=str(uuid.uuid4())[:8],
-                pipeline="builtin:poll-dry-run",
-                status="passed",
-                started_at=time.time(),
-                finished_at=time.time(),
-                steps=[
-                    StepResult(
-                        key=f"issue-{iid[:7]}",
-                        label=f"Dry-run {iid[:7]}",
-                        status="passed",
-                        exit_code=0,
-                        output=msg + "\n",
-                    )
-                ],
-            )
-            runs.append(run)
-            result["dispatched"].append({"issue_id": iid, "dry_run": True, "run_id": run.id})
-            continue
-
-        _script, _env, run = run_issue_agent(
-            boxci_root=boxci_root,
-            repo_url=repo_url,
-            branch=branch,
-            repo_id=repo_id,
-            issue_id=iid,
-            dry_run=False,
-            async_run=async_run,
-        )
-        store_run(run)
-        runs.append(run)
-        result["dispatched"].append({"issue_id": iid, "run_id": run.id, "status": run.status})
-
-    poll_env = build_issue_env(
+    env = build_issue_env(
         trigger="poll",
         workspace=workspace,
         repo_url=repo_url,
@@ -290,34 +218,42 @@ def run_poll(
         repo_id=repo_id,
     )
     summary = (
-        f"poll: {len(issue_ids)} issue COB(s), {len(pending)} to dispatch, "
+        f"poll: {len(issue_ids)} issue COB(s), {len(pending)} without issue/<short> branch, "
         f"{len(skipped)} skipped (branch exists)\n"
+        "poll: not dispatching — cursor-agent only runs when an issue triggers a webhook event "
+        "(or POST /api/runs/from-repo with trigger=issue)\n"
     )
-    for item in result["dispatched"]:
-        summary += f"  dispatch {item['issue_id'][:7]} → run {item['run_id']}\n"
+    for iid in pending[:50]:
+        summary += f"  pending {iid[:7]} (no agent — waiting for issue event)\n"
+    if len(pending) > 50:
+        summary += f"  … and {len(pending) - 50} more\n"
 
-    poll_run = RunResult(
+    run = RunResult(
         id=str(uuid.uuid4())[:8],
         pipeline="builtin:poll",
-        status="passed" if all(r.status != "failed" for r in runs) else "failed",
+        status="passed",
         started_at=time.time(),
         finished_at=time.time(),
-        env=poll_env,
+        env=env,
         steps=[
             StepResult(
                 key="poll",
-                label="Poll issues → dispatch",
+                label="Poll issues (list only)",
                 status="passed",
                 exit_code=0,
                 output=summary,
             )
         ],
     )
-    result["run"] = poll_run
-    result["env"] = poll_env
-    result["script"] = "builtin:poll"
-    result["runs"] = runs
-    return result
+    return {
+        "total_issues": len(issue_ids),
+        "pending": len(pending),
+        "skipped": [f"{i[:7]} (branch exists)" for i in skipped],
+        "dispatched": [],
+        "run": run,
+        "env": env,
+        "script": "builtin:poll",
+    }
 
 
 def _run_script_async(

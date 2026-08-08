@@ -1,5 +1,5 @@
 [Unit]
-Description=boxci Radicle issue poll (sleek)
+Description=boxci Radicle issue poll (list only; does not start cursor-agent)
 After=network.target boxci.service
 
 [Service]

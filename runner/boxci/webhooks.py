@@ -262,7 +262,12 @@ def handle_garden_issue_webhook(
     boxci_root: Path,
     header_event: str = "",
 ) -> dict[str, Any]:
-    """Garden issue open → builtin cursor-agent → Radicle patch."""
+    """Garden issue open → builtin cursor-agent → Radicle patch.
+
+    Only call this when the issue COB itself is the event subject (webhook
+    ``commit`` / ``after`` is the issue id, or an explicit issue endpoint /
+    manual trigger). Do not invoke for unrelated poll/list sweeps.
+    """
     parsed = parse_garden_payload(body, header_event=header_event)
     branch = parsed["branch"] or _default_branch()
     repo_id = parsed["repo"] or _default_repo_id()
@@ -310,7 +315,7 @@ def handle_poll(
     boxci_root: Path,
     header_event: str = "",
 ) -> dict[str, Any]:
-    """Scheduled / manual poll → builtin issue list + agent dispatch."""
+    """Scheduled / manual poll → list issue COBs only (never starts cursor-agent)."""
     repo_id, repo_url, branch = _resolve_repo(body, header_event=header_event)
     if not repo_url:
         return {"ignored": True, "reason": "repo_url required (or set BOXCI_DEFAULT_REPO_URL)"}
@@ -322,7 +327,7 @@ def handle_poll(
         branch=branch,
         repo_id=repo_id or None,
         dry_run=dry_run,
-        async_run=_should_run_async("poll"),
+        async_run=False,
     )
     return {
         "ignored": False,
