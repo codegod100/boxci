@@ -1,3 +1,6 @@
+# DEPRECATED — use sleek/.boxci/pipeline.yml (repo-local config).
+# Kept for manual POST /api/runs {"pipeline":"sleek-merge.yml"} only.
+#
 # boxci pipeline — sleek merge builds (APK + Flatpak)
 #
 # Trigger with BOXCI_TRIGGER=merge (GitHub push to main, dispatch script, or curl).
