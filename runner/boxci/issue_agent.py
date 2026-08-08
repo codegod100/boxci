@@ -97,6 +97,7 @@ def _run_script(
     cwd: Path,
     run_id: str | None = None,
     label: str = "issue agent",
+    started_at: float | None = None,
 ) -> RunResult:
     run_id = run_id or str(uuid.uuid4())[:8]
     env = dict(os.environ)
@@ -108,7 +109,7 @@ def _run_script(
         id=run_id,
         pipeline=f"builtin:{script.name}",
         status="running",
-        started_at=time.time(),
+        started_at=started_at or time.time(),
         env={k: env[k] for k in sorted(env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_", "BUILDKITE_"))},
     )
     step = StepResult(key="issue-agent", label=label, status="running")
@@ -325,17 +326,20 @@ def _run_script_async(
     import threading
 
     run_id = str(uuid.uuid4())[:8]
+    queued_at = time.time()
     pending = RunResult(
         id=run_id,
         pipeline=f"builtin:{script.name}",
         status="running",
-        started_at=time.time(),
+        started_at=queued_at,
         env={k: env[k] for k in sorted(env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_", "BUILDKITE_"))},
     )
     store_run(pending)
 
     def worker() -> None:
-        result = _run_script(script, env, cwd=cwd, run_id=run_id, label=label)
+        result = _run_script(
+            script, env, cwd=cwd, run_id=run_id, label=label, started_at=queued_at
+        )
         store_run(result)
 
     threading.Thread(target=worker, daemon=True).start()

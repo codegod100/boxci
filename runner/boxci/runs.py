@@ -24,9 +24,16 @@ def get_run(run_id: str) -> RunResult | None:
         return RUNS.get(run_id)
 
 
+def _run_recency(run: RunResult) -> float:
+    """Newest-first ordering: running runs by start time, else by finish time."""
+    if run.status == "running":
+        return run.started_at
+    return run.finished_at or run.started_at
+
+
 def list_runs(limit: int = 50) -> list[RunResult]:
     with _LOCK:
-        runs = sorted(RUNS.values(), key=lambda r: r.started_at, reverse=True)
+        runs = sorted(RUNS.values(), key=_run_recency, reverse=True)
     return runs[:limit]
 
 
@@ -89,8 +96,11 @@ def execute_pipeline(
     )
     store_run(pending)
 
+    queued_at = pending.started_at
+
     def worker() -> None:
         result = run_pipeline(pipeline, run_id=run_id, extra_env=extra_env, cwd=cwd)
+        result.started_at = queued_at
         store_run(result)
         if on_complete:
             on_complete(result)

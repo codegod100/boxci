@@ -575,11 +575,16 @@ header {
     });
   }
 
+  function runRecency(run) {
+    if (run.status === 'running') return run.started_at || 0;
+    return run.finished_at || run.started_at || 0;
+  }
+
   async function loadRuns() {
     try {
       const r = await fetch('/api/runs');
       const j = await r.json();
-      const runs = j.runs || [];
+      const runs = (j.runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
       lastFetch = new Date();
 
       document.getElementById('stat-total').textContent = runs.length;
