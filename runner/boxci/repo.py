@@ -58,39 +58,149 @@ def resolve_repo_url(repo: str, *, garden_host: str = GARDEN_HOST) -> str | None
     return None
 
 
-def parse_garden_payload(body: dict[str, Any]) -> dict[str, str]:
-    """Extract commit, branch, and repo from a Garden/broker webhook payload."""
+def _normalize_branch(branch: str) -> str:
+    """Garden broker refs may be ``main`` or ``<nid>/refs/heads/main``."""
+    branch = branch.strip()
+    if branch.startswith("refs/heads/"):
+        branch = branch.removeprefix("refs/heads/")
+    if "/refs/heads/" in branch:
+        branch = branch.split("/refs/heads/", 1)[1]
+    return branch
+
+
+def _normalize_garden_event_header(header_event: str) -> str:
+    """Normalize ``x-radicle-event-type`` (push, patch_created, …)."""
+    return header_event.strip().lower().replace("-", "_")
+
+
+def _garden_event_kind(body: dict[str, Any], *, header_event: str = "") -> str:
+    """Classify Garden webhook payloads (push, patch, branch delete, broker)."""
+    header = _normalize_garden_event_header(header_event)
+    if header in ("patch_created", "patch_updated", "patch"):
+        return "patch"
+    if header in ("branch_deleted",):
+        return "branch_deleted"
+    if header in ("push", "branch_updated"):
+        return "push"
+
+    action = str(body.get("action") or "").strip().lower()
+    if body.get("patch") is not None:
+        return "patch"
+    if body.get("deleted") is True or action == "deleted":
+        return "branch_deleted"
+    if body.get("after") is not None or body.get("commits") is not None:
+        return "push"
+    if body.get("commit") or body.get("Commit") or body.get("head") or body.get("sha"):
+        return "push"
+    return "unknown"
+
+
+def _garden_commit(body: dict[str, Any]) -> str:
     commit = str(
         body.get("commit")
         or body.get("Commit")
         or body.get("head")
         or body.get("sha")
+        or body.get("after")
         or ""
     ).strip()
-    branch = str(
-        body.get("branch")
-        or body.get("ref")
-        or body.get("refs/heads")
-        or body.get("default_branch")
-        or ""
-    ).strip()
-    if branch.startswith("refs/heads/"):
-        branch = branch.removeprefix("refs/heads/")
-    repo = str(
-        body.get("repo")
-        or body.get("repository")
-        or body.get("repo_id")
-        or body.get("rid")
-        or ""
-    ).strip()
-    repo_url = str(body.get("repo_url") or body.get("clone_url") or "").strip()
+    if commit:
+        return commit
+
+    commits = body.get("commits")
+    if isinstance(commits, list) and commits:
+        last = commits[-1]
+        if isinstance(last, dict):
+            return str(last.get("id") or last.get("oid") or "").strip()
+        if isinstance(last, str):
+            return last.strip()
+    return ""
+
+
+def _garden_repo_fields(body: dict[str, Any]) -> tuple[str, str]:
+    repo = ""
+    repo_url = ""
+    repository = body.get("repository")
+    if isinstance(repository, dict):
+        repo = str(repository.get("id") or "").strip()
+        repo_url = str(
+            repository.get("clone_url")
+            or repository.get("http_url")
+            or ""
+        ).strip()
+        if not repo_url and repo:
+            repo_url = resolve_repo_url(repo) or ""
+
+    if not repo:
+        repo = str(
+            body.get("repo")
+            or body.get("repo_id")
+            or body.get("rid")
+            or ""
+        ).strip()
+        if isinstance(body.get("repository"), str):
+            repo = str(body.get("repository")).strip()
+
+    if not repo_url:
+        repo_url = str(body.get("repo_url") or body.get("clone_url") or "").strip()
     if not repo_url and repo:
         repo_url = resolve_repo_url(repo) or ""
+    return repo, repo_url
+
+
+def parse_garden_payload(
+    body: dict[str, Any],
+    *,
+    header_event: str = "",
+) -> dict[str, str]:
+    """Extract commit, branch, repo, and event kind from a Garden/broker webhook."""
+    event_kind = _garden_event_kind(body, header_event=header_event)
+    repo, repo_url = _garden_repo_fields(body)
+
+    if event_kind == "patch":
+        return {
+            "commit": "",
+            "branch": "",
+            "repo": repo,
+            "repo_url": repo_url,
+            "event_kind": event_kind,
+        }
+
+    if event_kind == "branch_deleted":
+        branch = _normalize_branch(
+            str(body.get("branch") or body.get("ref") or "").strip()
+        )
+        return {
+            "commit": "",
+            "branch": branch,
+            "repo": repo,
+            "repo_url": repo_url,
+            "event_kind": event_kind,
+        }
+
+    commit = _garden_commit(body)
+    branch = _normalize_branch(
+        str(
+            body.get("branch")
+            or body.get("ref")
+            or body.get("refs/heads")
+            or body.get("default_branch")
+            or ""
+        ).strip()
+    )
+    if not branch:
+        repository = body.get("repository")
+        if isinstance(repository, dict):
+            branch = _normalize_branch(
+                str(repository.get("default_branch") or "").strip()
+            )
+
     return {
         "commit": commit,
         "branch": branch,
         "repo": repo,
         "repo_url": repo_url,
+        "event_kind": event_kind,
     }
 
 

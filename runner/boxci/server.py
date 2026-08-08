@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 import os
 from pathlib import Path
 
@@ -21,14 +24,42 @@ ROOT = Path(os.environ.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
 PIPELINES = ROOT / "pipelines"
 
 
-def _check_webhook_secret() -> tuple[bool, tuple[Response, int] | None]:
+def _check_webhook_secret(raw_body: bytes) -> tuple[bool, tuple[Response, int] | None]:
     secret = os.environ.get("BOXCI_WEBHOOK_SECRET", "").strip()
     if not secret:
         return True, None
+
+    # Garden native delivery (rad webhooks / dashboard): HMAC-SHA256 of raw body.
+    for header in ("X-Hub-Signature-256", "X-Radicle-Signature"):
+        sig = request.headers.get(header, "").strip()
+        if sig.startswith("sha256="):
+            expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+            provided = sig.removeprefix("sha256=")
+            if hmac.compare_digest(expected, provided):
+                return True, None
+
+    # Manual curl / adapter scripts that re-post JSON without re-signing.
     provided = request.headers.get("X-Boxci-Secret", "").strip()
-    if provided != secret:
-        return False, (jsonify({"error": "invalid webhook secret"}), 401)
-    return True, None
+    if provided == secret:
+        return True, None
+
+    return False, (jsonify({"error": "invalid webhook secret"}), 401)
+
+
+def _webhook_json_body() -> tuple[dict, tuple[Response, int] | None]:
+    raw_body = request.get_data()
+    ok, err = _check_webhook_secret(raw_body)
+    if not ok:
+        return {}, err  # type: ignore[return-value]
+    if not raw_body:
+        return {}, None
+    try:
+        body = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return {}, (jsonify({"error": "invalid JSON body"}), 400)
+    if not isinstance(body, dict):
+        return {}, (jsonify({"error": "JSON body must be an object"}), 400)
+    return body, None
 
 
 def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response, int]:
@@ -176,13 +207,17 @@ def create_run_from_repo():
 
 @app.post("/api/webhooks/garden")
 def garden_webhook():
-    ok, err = _check_webhook_secret()
-    if not ok:
-        return err  # type: ignore[return-value]
+    body, err = _webhook_json_body()
+    if err:
+        return err
 
-    body = request.get_json(silent=True) or {}
+    header_event = request.headers.get("X-Radicle-Event-Type", "")
     try:
-        result = handle_garden_webhook(body, boxci_root=ROOT)
+        result = handle_garden_webhook(
+            body,
+            boxci_root=ROOT,
+            header_event=header_event,
+        )
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
     except ValueError as exc:
@@ -195,13 +230,17 @@ def garden_webhook():
 
 @app.post("/api/webhooks/garden/issue")
 def garden_issue_webhook():
-    ok, err = _check_webhook_secret()
-    if not ok:
-        return err  # type: ignore[return-value]
+    body, err = _webhook_json_body()
+    if err:
+        return err
 
-    body = request.get_json(silent=True) or {}
+    header_event = request.headers.get("X-Radicle-Event-Type", "")
     try:
-        result = handle_garden_issue_webhook(body, boxci_root=ROOT)
+        result = handle_garden_issue_webhook(
+            body,
+            boxci_root=ROOT,
+            header_event=header_event,
+        )
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
     except ValueError as exc:
@@ -214,11 +253,9 @@ def garden_issue_webhook():
 
 @app.post("/api/poll")
 def poll_trigger():
-    ok, err = _check_webhook_secret()
-    if not ok:
-        return err  # type: ignore[return-value]
-
-    body = request.get_json(silent=True) or {}
+    body, err = _webhook_json_body()
+    if err:
+        return err
     try:
         result = handle_poll(body, boxci_root=ROOT)
     except FileNotFoundError as exc:

@@ -61,50 +61,110 @@ Supported `if` expressions (subset of Buildkite):
 
 ## Radicle Garden webhook
 
-**Payload URL** (register this on Garden for merge/patch events):
+Per the [Garden CI & Webhooks guide](https://radicle.garden/help/ci), register **one
+URL for all events** (dashboard *Send me everything*, or CLI with no event filter):
 
 ```
 https://boxci.boxd.sh/api/webhooks/garden
 ```
 
-Issue COB opens can use the same URL (boxci auto-routes) or register separately:
+boxci returns HTTP 200 for events it ignores (`{"ignored": true, "reason": "…"}`) so
+Garden does not retry. Issue COB commits on `main` **auto-route** to the issue handler —
+you do not need `/api/webhooks/garden/issue` as a second webhook.
 
-```
-https://boxci.boxd.sh/api/webhooks/garden/issue
-```
+### Garden delivery format
 
-Both expect `Content-Type: application/json` and the broker JSON below.
+Each POST includes:
 
-Example payload (Garden/broker):
+| Header | Value |
+|--------|--------|
+| `Content-Type` | `application/json` |
+| `x-radicle-event-type` | `push`, `patch_created`, `patch_updated`, `branch_deleted`, … |
+| `X-Hub-Signature-256` | `sha256=<hex>` — HMAC-SHA256 of the **raw** body (when a secret is configured) |
+
+Push JSON body (from [CLI smoke test](https://radicle.garden/help/ci/cli)):
 
 ```json
 {
-  "commit": "<40-char-sha>",
+  "after": "<40-char-sha>",
   "branch": "main",
-  "repo": "rad:z9mjPzpVK472QXaaP1picc5U9xBR"
+  "context": "boxci",
+  "commit_status_url": "https://nandi.radicle.garden/…/commit-status",
+  "repository": {
+    "id": "z9mjPzpVK472QXaaP1picc5U9xBR",
+    "name": "sleek",
+    "clone_url": "https://nandi.radicle.garden/z9mjPzpVK472QXaaP1picc5U9xBR.git",
+    "http_url": "https://nandi.radicle.garden/z9mjPzpVK472QXaaP1picc5U9xBR",
+    "default_branch": "main",
+    "seeder": "<garden-node-nid>"
+  },
+  "commits": []
 }
 ```
 
-boxci resolves `repo` → `https://nandi.radicle.garden/<naked-rid>.git`, checks out the commit, and runs `.boxci/pipeline.yml` when `on:` includes `merge`.
+Patch events use `patch.id`, `patch.after`, `patch.target` instead of root `after`/`branch`
+([Jenkins guide](https://radicle.garden/help/ci/jenkins)). boxci ignores them for merge CI.
 
-**Register on `nandi.radicle.garden`** (Radicle webhooks-adapter Postgres, or age-encrypted
-`.radicle/webhooks/*.yaml` in the repo). Example DB row for sleek merge builds:
+Legacy broker JSON (`commit`, `repo`, `branch` at the root) still works for manual curls and
+adapter scripts.
 
-```sql
-INSERT INTO webhook (repo_id, url, secret, content_type)
-VALUES (
-  'z9mjPzpVK472QXaaP1picc5U9xBR',
-  'https://boxci.boxd.sh/api/webhooks/garden',
-  '',
-  'application/json'
-);
+### What boxci does with each event
+
+| `x-radicle-event-type` | Payload shape | boxci action |
+|------------------------|---------------|--------------|
+| `push` / `branch_updated` | `after` + `branch: main` + `repository` | **Merge build** (`on: merge`) |
+| `push` on `main`, `after` is issue COB | same | **Issue agent** (`on: issue`) — auto-routed |
+| `push` on non-`main` branch | `after` + `branch: issue/…` | **Ignored** |
+| `patch_created` / `patch_updated` | `patch` + `repository` | **Ignored** |
+| `branch_deleted` | `deleted: true` or delete payload | **Ignored** |
+| Poll / schedule | — | `POST /api/poll` or systemd timer (not a Garden webhook) |
+
+Branch names may include a namespace prefix (`<nid>/refs/heads/main`); boxci normalizes to
+`main`.
+
+### Register the webhook
+
+**Dashboard (recommended)** — repo → Settings → Webhooks → Add webhook:
+
+- **Payload URL:** `https://boxci.boxd.sh/api/webhooks/garden`
+- **Integration name:** `boxci` (becomes `context` in the payload)
+- **Content type:** `application/json`
+- **Events:** *Send me everything* (or *Just the push event* if you only want merge CI)
+- **Secret:** optional; if set, also configure `BOXCI_WEBHOOK_SECRET` on the boxci VM to
+  the same value (boxci verifies `X-Hub-Signature-256`)
+
+**CLI** — from a repo working copy ([manage webhooks CLI](https://radicle.garden/help/ci/cli)):
+
+```bash
+# Install rad-webhooks once:
+curl -sSfL https://index.radicle.garden/raw/rad:z2jrMkSbYgoVVB2tnzDaja55iX42R/head/install.sh | bash
+
+rad webhooks add \
+  --name boxci \
+  --nid <your-garden-node-nid> \
+  --secret '<shared-secret>' \
+  --url 'https://boxci.boxd.sh/api/webhooks/garden'
+
+git add .radicle/webhooks/boxci.yaml
+git commit -m 'Enable boxci webhook'
+git push rad
 ```
 
-If the adapter pipes to a script instead of a URL, use
-`sleek/scripts/boxci/webhook-to-boxci.sh` (forwards broker JSON to boxci). Issue COBs
-route to `/api/webhooks/garden/issue`; merge/patch to `/api/webhooks/garden`.
+The CLI writes an age-encrypted `.radicle/webhooks/boxci.yaml` (see Garden persistence docs
+for git clean/smudge filters).
 
-Optional shared secret: set `BOXCI_WEBHOOK_SECRET` on the VM and send header `X-Boxci-Secret: <secret>`.
+Set the same secret on the boxci VM:
+
+```bash
+boxd env set BOXCI_WEBHOOK_SECRET='<shared-secret>' --machine boxci
+```
+
+For manual `curl` tests when a secret is configured, send `X-Boxci-Secret: <secret>` instead
+of re-signing the body.
+
+If the webhooks adapter pipes to a script instead of a URL, use
+`sleek/scripts/boxci/webhook-to-boxci.sh` (forwards broker or Garden JSON; pass
+`X-Boxci-Secret` when `BOXCI_WEBHOOK_SECRET` is set).
 
 ### Issue → cursor-agent → patch
 

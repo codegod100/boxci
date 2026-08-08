@@ -142,8 +142,8 @@ def _git_head(workspace: Path) -> str:
     return proc.stdout.strip() if proc.returncode == 0 else ""
 
 
-def _resolve_repo(body: dict[str, Any]) -> tuple[str, str, str]:
-    parsed = parse_garden_payload(body)
+def _resolve_repo(body: dict[str, Any], *, header_event: str = "") -> tuple[str, str, str]:
+    parsed = parse_garden_payload(body, header_event=header_event)
     repo_id = parsed["repo"] or _default_repo_id()
     repo_url = parsed["repo_url"] or _default_repo_url()
     if not repo_url and repo_id:
@@ -152,21 +152,41 @@ def _resolve_repo(body: dict[str, Any]) -> tuple[str, str, str]:
     return repo_id, repo_url, branch
 
 
-def handle_garden_webhook(body: dict[str, Any], *, boxci_root: Path) -> dict[str, Any]:
+def handle_garden_webhook(
+    body: dict[str, Any],
+    *,
+    boxci_root: Path,
+    header_event: str = "",
+) -> dict[str, Any]:
     """Parse a Garden merge webhook and run the repo's .boxci pipeline."""
-    parsed = parse_garden_payload(body)
+    parsed = parse_garden_payload(body, header_event=header_event)
+    event_kind = parsed.get("event_kind", "push")
     commit = parsed["commit"]
     branch = parsed["branch"] or _default_branch()
     repo_id = parsed["repo"] or _default_repo_id()
     repo_url = parsed["repo_url"] or _default_repo_url()
 
+    if event_kind == "patch":
+        return {"ignored": True, "reason": "patch event (no CI trigger)", "event": event_kind}
+    if event_kind == "branch_deleted":
+        return {
+            "ignored": True,
+            "reason": "branch deleted event (no CI trigger)",
+            "event": event_kind,
+        }
+
     if not commit:
-        return {"ignored": True, "reason": "no commit in payload"}
+        return {
+            "ignored": True,
+            "reason": "no commit in payload",
+            "event": event_kind,
+        }
 
     if branch and branch != _default_branch():
         return {
             "ignored": True,
             "reason": f"branch {branch!r} is not {_default_branch()!r}",
+            "event": event_kind,
         }
 
     if not repo_url and repo_id:
@@ -195,9 +215,14 @@ def handle_garden_webhook(body: dict[str, Any], *, boxci_root: Path) -> dict[str
     }
 
 
-def handle_garden_issue_webhook(body: dict[str, Any], *, boxci_root: Path) -> dict[str, Any]:
+def handle_garden_issue_webhook(
+    body: dict[str, Any],
+    *,
+    boxci_root: Path,
+    header_event: str = "",
+) -> dict[str, Any]:
     """Garden issue open → checkout main + run issue agent (.boxci on: issue)."""
-    parsed = parse_garden_payload(body)
+    parsed = parse_garden_payload(body, header_event=header_event)
     branch = parsed["branch"] or _default_branch()
     repo_id = parsed["repo"] or _default_repo_id()
     repo_url = parsed["repo_url"] or _default_repo_url()
@@ -239,9 +264,14 @@ def handle_garden_issue_webhook(body: dict[str, Any], *, boxci_root: Path) -> di
     }
 
 
-def handle_poll(body: dict[str, Any], *, boxci_root: Path) -> dict[str, Any]:
+def handle_poll(
+    body: dict[str, Any],
+    *,
+    boxci_root: Path,
+    header_event: str = "",
+) -> dict[str, Any]:
     """Scheduled / manual poll → run .boxci on: poll (lists issues, dispatches agents)."""
-    repo_id, repo_url, branch = _resolve_repo(body)
+    repo_id, repo_url, branch = _resolve_repo(body, header_event=header_event)
     if not repo_url:
         return {"ignored": True, "reason": "repo_url required (or set BOXCI_DEFAULT_REPO_URL)"}
 
