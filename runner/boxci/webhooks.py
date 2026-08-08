@@ -17,7 +17,7 @@ from boxci.repo import (
     resolve_repo_url,
 )
 from boxci.runs import execute_pipeline
-from boxci.runner import RunResult, run_pipeline
+from boxci.runner import RunResult
 
 
 def _default_branch() -> str:

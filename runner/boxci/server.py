@@ -8,7 +8,6 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response
 
 from boxci.runs import execute_pipeline, get_run, list_runs, serialize_run, store_run
-from boxci.runner import run_pipeline
 from boxci.webhooks import (
     handle_garden_issue_webhook,
     handle_garden_webhook,

@@ -33,8 +33,12 @@ steps:
 | Trigger | Set by | Typical source |
 |---------|--------|----------------|
 | `merge` | `BOXCI_TRIGGER=merge` | Garden merge webhook, push to `main` |
+| `issue` | `BOXCI_TRIGGER=issue` | Garden issue webhook, poll dispatch |
+| `poll` | `BOXCI_TRIGGER=poll` | `POST /api/poll`, systemd timer (10m) |
 
 When `on:` is present, the pipeline runs only if the incoming trigger matches.
+
+Issue/poll runs also set `RADICLE_TRIGGER` and `RADICLE_ISSUE_ID` so repos can reuse `scripts/buildkite/*` unchanged (`BUILDKITE_COMMIT` / `BUILDKITE_BRANCH` are mirrored from the checkout tip).
 
 ### Server-provided env
 
@@ -78,6 +82,56 @@ boxci resolves `repo` → `https://nandi.radicle.garden/<naked-rid>.git`, checks
 
 Optional shared secret: set `BOXCI_WEBHOOK_SECRET` on the VM and send header `X-Boxci-Secret: <secret>`.
 
+### Issue → cursor-agent → patch
+
+Mirrors Buildkite's `RADICLE_TRIGGER=issue|poll` flow:
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/webhooks/garden/issue` | New issue COB → run `on: issue` steps |
+| `POST /api/poll` | Poll pending issues → run `on: poll` (lists COBs, dispatches agents) |
+| `POST /api/webhooks/garden` | Merge builds; **auto-routes** issue COB commits to the issue handler |
+
+Issue webhook payload:
+
+```json
+{
+  "commit": "<40-char issue COB id>",
+  "branch": "main",
+  "repo": "rad:z9mjPzpVK472QXaaP1picc5U9xBR"
+}
+```
+
+Poll (uses `BOXCI_DEFAULT_REPO_URL` when body omits `repo_url`):
+
+```bash
+curl -X POST https://boxci.boxd.sh/api/poll \
+  -H 'Content-Type: application/json' \
+  -d '{"repo":"rad:z9mjPzpVK472QXaaP1picc5U9xBR"}'
+```
+
+Dry-run agent prompt (no cursor-agent call):
+
+```bash
+curl -X POST https://boxci.boxd.sh/api/runs/from-repo \
+  -H 'Content-Type: application/json' \
+  -d '{"repo_url":"https://nandi.radicle.garden/z9mjPzpVK472QXaaP1picc5U9xBR.git","trigger":"issue","issue_id":"<id>","dry_run":true}'
+```
+
+**VM secrets** (via `boxd env set` or OpenBao → `/etc/profile.d/boxd-env.sh`):
+
+- `CURSOR_API_KEY` — Cursor CLI
+- `RADICLE_SECRET_KEY` — dedicated CI Radicle identity (OpenSSH PEM)
+- `RADICLE_PUBLIC_KEY` / `RAD_PASSPHRASE` — optional
+
+Install the 10m poll timer on the boxci VM:
+
+```bash
+sudo cp deploy/boxci-poll.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now boxci-poll.timer
+```
+
 ### Persistent workspace (optional)
 
 By default checkouts live under `$BOXCI_ROOT/workspaces/<slug>/`. Override per repo:
@@ -93,6 +147,8 @@ BOXCI_WORKSPACE_z9mjPzpVK472QXaaP1picc5U9xBR=/home/boxd/sleek
 |----------|---------|
 | `GET /health` | Liveness |
 | `POST /api/webhooks/garden` | Garden merge webhook → repo `.boxci` |
+| `POST /api/webhooks/garden/issue` | Garden issue open → `on: issue` agent |
+| `POST /api/poll` | Issue poll → `on: poll` |
 | `POST /api/runs/from-repo` | Manual trigger with `repo_url`, `sha`, `trigger` |
 | `POST /api/runs` | Legacy central pipelines in `pipelines/` |
 | `GET /api/runs` | List recent runs |
