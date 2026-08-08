@@ -59,7 +59,9 @@ and nix attrs `.#android` / `.#flatpak` (same as Buildkite/GHA).
 
 **Trigger** (sets `BOXCI_TRIGGER=merge`):
 
-- GitHub: sleek `.github/workflows/boxci-merge.yml` on push to `main`
+- **Radicle merge (primary):** Buildkite step on `main` (Garden buildkite-adapter) calls
+  `scripts/boxci/dispatch-merge.sh`, or Garden webhook → `scripts/boxci/webhook-to-boxci.sh`
+- GitHub: sleek `.github/workflows/boxci-merge.yml` on push to `main` (mirror only)
 - Manual: `./scripts/boxci/dispatch-merge.sh` from the sleek repo
 - curl:
 

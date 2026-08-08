@@ -14,7 +14,7 @@
 env:
   BOXCI_TRIGGER: "merge"
   SLEEK_ROOT: "/home/boxd/sleek"
-  SLEEK_REPO_URL: "https://github.com/codegod100/sleek.git"
+  SLEEK_REPO_URL: "https://nandi.radicle.garden/z9mjPzpVK472QXaaP1picc5U9xBR.git"
   SLEEK_BRANCH: "main"
   RUST_BACKTRACE: "1"
   GIT_TERMINAL_PROMPT: "0"
