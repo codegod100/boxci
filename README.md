@@ -1,6 +1,6 @@
 # boxci
 
-Minimal Nix-flake CI engine with sleek-inspired pipeline YAML. Deployed at **https://ci.boxd.sh**.
+Minimal Nix-flake CI engine with sleek-inspired pipeline YAML. Deployed at **https://boxci.boxd.sh** (`ci.boxd.sh` is reserved globally on boxd — contact support to reclaim that name).
 
 ## Pipeline format
 
@@ -41,15 +41,15 @@ curl -X POST http://localhost:8080/api/runs \
   -d '{"pipeline":"quick.yml"}'
 ```
 
-## Remote (ci.boxd.sh)
+## Remote (boxci.boxd.sh)
 
 ```bash
-curl https://ci.boxd.sh/health
-curl https://ci.boxd.sh/api/pipelines
-curl -X POST https://ci.boxd.sh/api/runs \
+curl https://boxci.boxd.sh/health
+curl https://boxci.boxd.sh/api/pipelines
+curl -X POST https://boxci.boxd.sh/api/runs \
   -H 'Content-Type: application/json' \
   -d '{"pipeline":"quick.yml"}'
-curl https://ci.boxd.sh/api/runs
+curl https://boxci.boxd.sh/api/runs
 ```
 
 ## Project layout

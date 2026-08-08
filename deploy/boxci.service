@@ -1,0 +1,17 @@
+[Unit]
+Description=boxci CI engine HTTP server
+After=network.target
+
+[Service]
+Type=simple
+User=boxd
+WorkingDirectory=/home/boxd/boxci
+Environment=BOXCI_ROOT=/home/boxd/boxci
+Environment=BOXCI_PORT=8080
+Environment=PATH=/home/boxd/boxci/result/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/boxd/boxci/result/bin/boxci-server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
