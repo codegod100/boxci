@@ -1,0 +1,21 @@
+[project]
+name = "boxci"
+version = "0.1.0"
+description = "Minimal CI pipeline runner inspired by sleek/Buildkite"
+requires-python = ">=3.11"
+dependencies = [
+  "pyyaml>=6.0",
+  "flask>=3.0",
+]
+
+[project.scripts]
+boxci = "boxci.cli:main"
+boxci-server = "boxci.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["boxci*"]

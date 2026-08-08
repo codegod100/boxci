@@ -1,0 +1,14 @@
+# Minimal check-only pipeline for quick triggers
+
+env:
+  BOXCI_TRIGGER: "quick"
+
+steps:
+  - label: ":white_check_mark: Quick check"
+    key: quick
+    command: |
+      set -euo pipefail
+      echo "boxci quick check at $(date -Is)"
+      test -f flake.nix
+      test -f pipelines/example.yml
+      echo "repo structure OK"

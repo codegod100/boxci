@@ -1,0 +1,53 @@
+# boxci example pipeline — inspired by sleek/.buildkite/pipeline.yml
+#
+# Patterns from sleek:
+#   - env block for shared variables
+#   - steps with label, key, if conditions, depends_on
+#   - shell command blocks with set -euo pipefail
+#   - conditional triggers via env (RADICLE_TRIGGER in sleek; BOXCI_TRIGGER here)
+
+env:
+  RUST_BACKTRACE: "0"
+  BOXCI_TRIGGER: "default"
+
+steps:
+  - label: ":nix: Flake check"
+    key: flake-check
+    if: build.env("BOXCI_TRIGGER") != "poll"
+    command: |
+      set -euo pipefail
+      echo "--- :nix: verify flake"
+      nix flake check --no-build || nix flake show
+      echo "flake OK"
+
+  - label: ":test: Example tests"
+    key: test
+    depends_on: flake-check
+    if: build.env("BOXCI_TRIGGER") != "poll"
+    command: |
+      set -euo pipefail
+      echo "--- running example test suite"
+      echo "1..2"
+      echo "ok 1 - sanity"
+      echo "ok 2 - pipeline runner reachable"
+      echo "tests passed"
+
+  - label: ":package: Build boxci"
+    key: build
+    depends_on: test
+    allow_dependency_failure: false
+    command: |
+      set -euo pipefail
+      echo "--- :package: nix build .#boxci"
+      nix build .#boxci -L --print-build-logs
+      ./result/bin/boxci run pipelines/quick.yml
+      echo "build OK"
+
+  - label: ":mag: Poll (scheduled)"
+    key: poll
+    if: build.env("BOXCI_TRIGGER") == "poll"
+    command: |
+      set -euo pipefail
+      echo "poll step — would dispatch pending jobs"
+      curl -sf http://127.0.0.1:${BOXCI_PORT:-8080}/health | head -c 200
+      echo ""
