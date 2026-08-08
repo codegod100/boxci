@@ -2,52 +2,54 @@
 
 from __future__ import annotations
 
-import json
 import os
-import threading
-import time
 from pathlib import Path
 
 from flask import Flask, jsonify, request, Response
 
-from boxci.runner import load_pipeline, run_pipeline, RunResult, StepResult
+from boxci.runs import execute_pipeline, get_run, list_runs, serialize_run, store_run
+from boxci.runner import run_pipeline
+from boxci.webhooks import (
+    handle_garden_issue_webhook,
+    handle_garden_webhook,
+    handle_poll,
+    trigger_from_repo,
+)
 
 app = Flask(__name__)
 
 ROOT = Path(os.environ.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
 PIPELINES = ROOT / "pipelines"
-RUNS: dict[str, RunResult] = {}
-_LOCK = threading.Lock()
 
 
-def _serialize_run(run: RunResult) -> dict:
-    return {
-        "id": run.id,
-        "pipeline": run.pipeline,
-        "status": run.status,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "duration_s": (run.finished_at or time.time()) - run.started_at,
-        "env": run.env,
-        "steps": [
-            {
-                "key": s.key,
-                "label": s.label,
-                "status": s.status,
-                "exit_code": s.exit_code,
-                "duration_s": s.duration_s,
-                "output_tail": "\n".join((s.output or "").strip().splitlines()[-30:]),
-            }
-            for s in run.steps
-        ],
+def _check_webhook_secret() -> tuple[bool, tuple[Response, int] | None]:
+    secret = os.environ.get("BOXCI_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        return True, None
+    provided = request.headers.get("X-Boxci-Secret", "").strip()
+    if provided != secret:
+        return False, (jsonify({"error": "invalid webhook secret"}), 401)
+    return True, None
+
+
+def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response, int]:
+    if result.get("ignored"):
+        return jsonify(result), 200
+
+    run = result["run"]
+    store_run(run)
+    status = 202 if run.status == "running" else 201
+    payload = {
+        "ignored": False,
+        "pipeline": result["pipeline"],
+        "env": result["env"],
+        **serialize_run(run),
     }
-
-
-def _execute_async(pipeline: Path, extra_env: dict[str, str]) -> RunResult:
-    run = run_pipeline(pipeline, extra_env=extra_env, cwd=ROOT)
-    with _LOCK:
-        RUNS[run.id] = run
-    return run
+    if "issue_id" in result:
+        payload["issue_id"] = result["issue_id"]
+    if accepted:
+        payload["accepted"] = True
+    return jsonify(payload), status
 
 
 @app.get("/")
@@ -61,18 +63,30 @@ pre{background:#111;color:#eee;padding:1rem;overflow:auto;border-radius:8px}
 .ok{color:#0a0}.fail{color:#c00}
 </style></head><body>
 <h1>boxci</h1>
-<p>Minimal Nix-flake CI engine — sleek-inspired pipeline YAML.</p>
+<p>Minimal Nix-flake CI engine — repos carry <code>.boxci/pipeline.yml</code>.</p>
 <h2>API</h2>
 <ul>
-<li><code>GET /api/pipelines</code> — list pipelines</li>
-<li><code>POST /api/runs</code> — <code>{"pipeline":"example.yml","env":{}}</code></li>
+<li><code>GET /api/pipelines</code> — list legacy central pipelines</li>
+<li><code>POST /api/runs</code> — run a central pipeline <code>{"pipeline":"example.yml","env":{}}</code></li>
+<li><code>POST /api/runs/from-repo</code> — checkout repo + run its <code>.boxci</code></li>
+<li><code>POST /api/webhooks/garden</code> — Garden merge webhook (auto-routes issue COBs)</li>
+<li><code>POST /api/webhooks/garden/issue</code> — Garden issue open → cursor-agent</li>
+<li><code>POST /api/poll</code> — scheduled issue poll (<code>on: poll</code>)</li>
 <li><code>GET /api/runs</code> — list runs</li>
 <li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
 </ul>
-<h2>CLI</h2>
-<pre>boxci run pipelines/example.yml
-curl -X POST https://ci.boxd.sh/api/runs -H 'Content-Type: application/json' \\
-  -d '{"pipeline":"example.yml"}'</pre>
+<h2>Webhooks</h2>
+<pre>curl -X POST https://boxci.boxd.sh/api/webhooks/garden \\
+  -H 'Content-Type: application/json' \\
+  -d '{"commit":"&lt;sha&gt;","branch":"main","repo":"rad:z9mj..."}'
+
+curl -X POST https://boxci.boxd.sh/api/webhooks/garden/issue \\
+  -H 'Content-Type: application/json' \\
+  -d '{"commit":"&lt;issue-cob-id&gt;","repo":"rad:z9mj..."}'
+
+curl -X POST https://boxci.boxd.sh/api/poll \\
+  -H 'Content-Type: application/json' \\
+  -d '{"repo":"rad:z9mj..."}'</pre>
 </body></html>"""
     return Response(html, mimetype="text/html")
 
@@ -90,19 +104,16 @@ def list_pipelines():
 
 
 @app.get("/api/runs")
-def list_runs():
-    with _LOCK:
-        runs = sorted(RUNS.values(), key=lambda r: r.started_at, reverse=True)
-    return jsonify({"runs": [_serialize_run(r) for r in runs[:50]]})
+def list_runs_api():
+    return jsonify({"runs": [serialize_run(r) for r in list_runs()]})
 
 
 @app.get("/api/runs/<run_id>")
-def get_run(run_id: str):
-    with _LOCK:
-        run = RUNS.get(run_id)
+def get_run_api(run_id: str):
+    run = get_run(run_id)
     if not run:
         return jsonify({"error": "not found"}), 404
-    return jsonify(_serialize_run(run))
+    return jsonify(serialize_run(run))
 
 
 @app.post("/api/runs")
@@ -114,10 +125,111 @@ def create_run():
         return jsonify({"error": f"pipeline not found: {name}"}), 404
 
     extra_env = {str(k): str(v) for k, v in (body.get("env") or {}).items()}
+    async_run = body.get("async") in (True, 1, "1", "true", "yes") or extra_env.get(
+        "BOXCI_TRIGGER"
+    ) in ("merge", "issue", "poll")
+    run = execute_pipeline(path, extra_env, cwd=ROOT, async_run=async_run)
+    status = 202 if run.status == "running" else 201
+    return jsonify(serialize_run(run)), status
 
-    # Run synchronously for simplicity (boxd VM has enough resources)
-    run = _execute_async(path, extra_env)
-    return jsonify(_serialize_run(run)), 201
+
+@app.post("/api/runs/from-repo")
+def create_run_from_repo():
+    body = request.get_json(silent=True) or {}
+    repo_url = str(body.get("repo_url") or body.get("url") or "").strip()
+    if not repo_url:
+        return jsonify({"error": "repo_url required"}), 400
+
+    trigger = str(body.get("trigger") or body.get("on") or "merge").strip()
+    sha = str(body.get("sha") or body.get("commit") or body.get("GIT_SHA") or "").strip() or None
+    branch = str(body.get("branch") or body.get("GIT_BRANCH") or "main").strip()
+    repo_id = str(body.get("repo") or body.get("repo_id") or "").strip() or None
+    issue_id = str(body.get("issue_id") or body.get("RADICLE_ISSUE_ID") or "").strip() or None
+    dry_run = body.get("dry_run") in (True, 1, "1", "true", "yes")
+
+    try:
+        pipeline_path, env, run = trigger_from_repo(
+            boxci_root=ROOT,
+            repo_url=repo_url,
+            trigger=trigger,
+            sha=sha,
+            branch=branch,
+            repo_id=repo_id,
+            issue_id=issue_id,
+            dry_run=dry_run,
+            async_run=trigger in ("issue", "poll", "merge"),
+        )
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001 — surface git/checkout failures
+        return jsonify({"error": str(exc)}), 500
+
+    store_run(run)
+    status = 202 if run.status == "running" else 201
+    return jsonify({
+        "pipeline": str(pipeline_path),
+        "env": env,
+        **serialize_run(run),
+    }), status
+
+
+@app.post("/api/webhooks/garden")
+def garden_webhook():
+    ok, err = _check_webhook_secret()
+    if not ok:
+        return err  # type: ignore[return-value]
+
+    body = request.get_json(silent=True) or {}
+    try:
+        result = handle_garden_webhook(body, boxci_root=ROOT)
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    return _webhook_response(result)
+
+
+@app.post("/api/webhooks/garden/issue")
+def garden_issue_webhook():
+    ok, err = _check_webhook_secret()
+    if not ok:
+        return err  # type: ignore[return-value]
+
+    body = request.get_json(silent=True) or {}
+    try:
+        result = handle_garden_issue_webhook(body, boxci_root=ROOT)
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    return _webhook_response(result, accepted=True)
+
+
+@app.post("/api/poll")
+def poll_trigger():
+    ok, err = _check_webhook_secret()
+    if not ok:
+        return err  # type: ignore[return-value]
+
+    body = request.get_json(silent=True) or {}
+    try:
+        result = handle_poll(body, boxci_root=ROOT)
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    return _webhook_response(result)
 
 
 def main() -> None:

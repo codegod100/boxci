@@ -240,6 +240,6 @@ def main_cli(argv: list[str] | None = None) -> int:
         else:
             i += 1
 
-    run = run_pipeline(path, extra_env=extra, cwd=path.parent.parent if path.parent.name == "pipelines" else Path.cwd())
+    run = run_pipeline(path, extra_env=extra, cwd=path.parent.parent if path.parent.name in ("pipelines", ".boxci") else Path.cwd())
     print_run_summary(run)
     return 0 if run.status == "passed" else 1
