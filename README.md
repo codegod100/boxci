@@ -61,12 +61,19 @@ Supported `if` expressions (subset of Buildkite):
 
 ## Radicle Garden webhook
 
-Register on Garden (merge events):
+**Payload URL** (register this on Garden for merge/patch events):
 
 ```
-POST https://boxci.boxd.sh/api/webhooks/garden
-Content-Type: application/json
+https://boxci.boxd.sh/api/webhooks/garden
 ```
+
+Issue COB opens can use the same URL (boxci auto-routes) or register separately:
+
+```
+https://boxci.boxd.sh/api/webhooks/garden/issue
+```
+
+Both expect `Content-Type: application/json` and the broker JSON below.
 
 Example payload (Garden/broker):
 
