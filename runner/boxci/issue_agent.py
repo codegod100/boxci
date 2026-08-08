@@ -15,6 +15,7 @@ from boxci.repo import (
     list_issue_ids,
     remote_branch_exists,
     repo_slug,
+    resolve_repo_name,
     resolve_repo_url,
 )
 from boxci.runner import RunResult, StepResult
@@ -83,6 +84,9 @@ def build_issue_env(
         extra["BUILDKITE_COMMIT"] = issue_id
     if dry_run:
         extra["RADICLE_AGENT_DRY_RUN"] = "1"
+    repo_name = resolve_repo_name(workspace, slug)
+    if repo_name:
+        extra["BOXCI_REPO_NAME"] = repo_name
     return extra
 
 

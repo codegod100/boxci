@@ -15,6 +15,7 @@ from boxci.repo import (
     parse_garden_payload,
     pipeline_supports_trigger,
     repo_slug,
+    resolve_repo_name,
     resolve_repo_url,
 )
 from boxci.runs import execute_pipeline
@@ -56,14 +57,22 @@ def _build_extra_env(
     sha: str | None,
     issue_id: str | None = None,
     dry_run: bool = False,
+    repo_id: str | None = None,
+    pipeline_path: Path | None = None,
 ) -> dict[str, str]:
     """Env for repo pipeline runs — mirrors Buildkite RADICLE_* for sleek scripts."""
     tip = sha or ""
+    rid = repo_id or f"rad:{slug}"
+    if not rid.startswith("rad:"):
+        rid = f"rad:{rid.removeprefix('rad://')}"
     extra_env: dict[str, str] = {
         "BOXCI_TRIGGER": trigger,
         "BOXCI_REPO_ROOT": str(workspace),
         "BOXCI_REPO_URL": repo_url,
         "BOXCI_REPO_SLUG": slug,
+        "BOXCI_REPO_ID": rid,
+        "RADICLE_RID": rid,
+        "RADICLE_GARDEN_GIT": repo_url,
         "GIT_SHA": tip,
         "GIT_BRANCH": branch,
         "GIT_TERMINAL_PROMPT": "0",
@@ -71,6 +80,9 @@ def _build_extra_env(
         "BUILDKITE_COMMIT": tip,
         "BUILDKITE_BRANCH": branch,
     }
+    repo_name = resolve_repo_name(workspace, slug, pipeline_path=pipeline_path)
+    if repo_name:
+        extra_env["BOXCI_REPO_NAME"] = repo_name
 
     if trigger in ("issue", "poll"):
         extra_env["RADICLE_TRIGGER"] = trigger
@@ -147,6 +159,8 @@ def trigger_from_repo(
         sha=sha or _git_head(workspace),
         issue_id=issue_id,
         dry_run=dry_run,
+        repo_id=repo_id,
+        pipeline_path=pipeline_path,
     )
 
     run = execute_pipeline(

@@ -228,6 +228,36 @@ def load_repo_pipeline(path: Path) -> dict[str, Any]:
     return data
 
 
+def resolve_repo_name(
+    workspace: Path,
+    slug: str,
+    *,
+    pipeline_path: Path | None = None,
+) -> str:
+    """Human-readable repo name for dashboard display."""
+    path = pipeline_path
+    if path is None:
+        try:
+            path = find_pipeline_file(workspace)
+        except FileNotFoundError:
+            path = None
+
+    if path is not None:
+        try:
+            pipeline = load_repo_pipeline(path)
+            name = pipeline.get("name")
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        except (OSError, ValueError):
+            pass
+
+    base = workspace.name
+    if base and base != slug and not _naked_rid(base):
+        return base
+
+    return ""
+
+
 def pipeline_supports_trigger(pipeline: dict[str, Any], trigger: str) -> bool:
     on = pipeline.get("on")
     if on is None:

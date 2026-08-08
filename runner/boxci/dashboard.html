@@ -200,6 +200,7 @@ header {
   color: var(--text);
 }
 .tag.trigger { border-color: #3d5a8a; color: var(--accent); }
+.tag.repo { border-color: #4a6a4a; color: var(--cream); font-weight: 500; }
 
 .run-times {
   text-align: right;
@@ -426,6 +427,37 @@ header {
     return s.length > 8 ? s.slice(0, 8) : s;
   }
 
+  function repoName(env) {
+    if (env.BOXCI_REPO_NAME) return env.BOXCI_REPO_NAME;
+    const root = (env.BOXCI_REPO_ROOT || '').replace(/\\/g, '/');
+    const slug = env.BOXCI_REPO_SLUG || '';
+    if (root) {
+      const base = root.split('/').pop() || '';
+      if (base && base !== slug && base.length < 40 && !/^[A-Za-z0-9]{43,}$/.test(base)) {
+        return base;
+      }
+    }
+    return '';
+  }
+
+  function repoRid(env) {
+    const rid = env.RADICLE_RID || env.BOXCI_REPO_ID || '';
+    if (rid) return rid.startsWith('rad:') ? rid : 'rad:' + rid;
+    const slug = env.BOXCI_REPO_SLUG || '';
+    return slug ? 'rad:' + slug : '';
+  }
+
+  function repoLabel(env) {
+    const name = repoName(env);
+    const rid = repoRid(env);
+    const shortRid = rid ? (rid.startsWith('rad:') ? 'rad:' + shortSha(rid.slice(4)) : shortSha(rid)) : '';
+    if (name && shortRid) return name + ' · ' + shortRid;
+    if (name) return name;
+    if (shortRid) return shortRid;
+    const slug = env.BOXCI_REPO_SLUG || '';
+    return slug ? shortSha(slug) : '';
+  }
+
   function esc(s) {
     const d = document.createElement('div');
     d.textContent = s;
@@ -459,7 +491,7 @@ header {
   function renderRun(run) {
     const env = run.env || {};
     const trigger = env.BOXCI_TRIGGER || 'manual';
-    const slug = env.BOXCI_REPO_SLUG || '';
+    const repo = repoLabel(env);
     const branch = env.GIT_BRANCH || '';
     const sha = env.GIT_SHA || env.RADICLE_ISSUE_ID || '';
     const issue = env.RADICLE_ISSUE_ID || '';
@@ -484,7 +516,7 @@ header {
         ).join('')}</div></div>`
       : '';
 
-    const envKeys = ['BOXCI_TRIGGER', 'BOXCI_REPO_SLUG', 'BOXCI_REPO_URL', 'GIT_BRANCH', 'GIT_SHA', 'RADICLE_ISSUE_ID', 'BOXCI_RUN_ID'];
+    const envKeys = ['BOXCI_TRIGGER', 'BOXCI_REPO_NAME', 'BOXCI_REPO_SLUG', 'BOXCI_REPO_ID', 'RADICLE_RID', 'BOXCI_REPO_URL', 'GIT_BRANCH', 'GIT_SHA', 'RADICLE_ISSUE_ID', 'BOXCI_RUN_ID'];
     const envHtml = envKeys.filter(k => env[k]).length
       ? `<div class="env-grid">${envKeys.filter(k => env[k]).map(k =>
           `<div class="env-item"><kbd>${esc(k)}</kbd> ${esc(env[k])}</div>`
@@ -503,7 +535,7 @@ header {
           </div>
           <div class="run-sub">
             <span><span class="tag trigger">${esc(trigger)}</span></span>
-            ${slug ? `<span class="tag">${esc(slug)}</span>` : ''}
+            ${repo ? `<span class="tag repo" title="${esc(repoRid(env))}">${esc(repo)}</span>` : ''}
             ${branch ? `<span>branch <code>${esc(branch)}</code></span>` : ''}
             ${sha ? `<span>sha <code>${esc(shortSha(sha))}</code></span>` : ''}
             ${issue && issue !== sha ? `<span>issue <code>${esc(shortSha(issue))}</code></span>` : ''}
