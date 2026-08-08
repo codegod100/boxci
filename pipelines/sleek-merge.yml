@@ -1,0 +1,190 @@
+# boxci pipeline — sleek merge builds (APK + Flatpak)
+#
+# Trigger with BOXCI_TRIGGER=merge (GitHub push to main, dispatch script, or curl).
+# Reuses sleek's ci-nixbuild.sh + nix .#android / .#flatpak (same as Buildkite/GHA).
+#
+# Env (optional overrides):
+#   SLEEK_ROOT     — checkout dir (default /home/boxd/sleek on boxd VM)
+#   SLEEK_REPO_URL — clone URL (default GitHub mirror)
+#   GIT_SHA        — exact commit to build (default: tip of main)
+#   NIXBUILD_TOKEN / OPENBAO_TOKEN — nixbuild.net auth (soft-skip artifacts if missing)
+#
+# Artifacts land under: $BOXCI_ROOT/artifacts/sleek/$BOXCI_RUN_ID/
+
+env:
+  BOXCI_TRIGGER: "merge"
+  SLEEK_ROOT: "/home/boxd/sleek"
+  SLEEK_REPO_URL: "https://github.com/codegod100/sleek.git"
+  SLEEK_BRANCH: "main"
+  RUST_BACKTRACE: "1"
+  GIT_TERMINAL_PROMPT: "0"
+
+steps:
+  - label: ":git: Sync sleek"
+    key: sync
+    if: build.env("BOXCI_TRIGGER") == "merge"
+    command: |
+      set -euo pipefail
+      root="${SLEEK_ROOT:?}"
+      url="${SLEEK_REPO_URL:?}"
+      branch="${SLEEK_BRANCH:-main}"
+      sha="${GIT_SHA:-}"
+
+      mkdir -p "$(dirname "$root")"
+      if [[ ! -d "$root/.git" ]]; then
+        echo "--- cloning $url → $root"
+        git clone --branch "$branch" --depth 50 "$url" "$root"
+      fi
+      cd "$root"
+      git fetch origin "$branch" --depth 50
+      if [[ -n "$sha" ]]; then
+        git checkout "$sha"
+      else
+        git checkout "$branch"
+        git reset --hard "origin/$branch"
+      fi
+      echo "sleek @ $(git rev-parse --short HEAD) ($(git log -1 --oneline))"
+
+  - label: ":rust: Check"
+    key: check
+    if: build.env("BOXCI_TRIGGER") == "merge"
+    depends_on: sync
+    command: |
+      set -euo pipefail
+      cd "${SLEEK_ROOT:?}"
+
+      if command -v apt-get >/dev/null 2>&1; then
+        sudo DEBIAN_FRONTEND=noninteractive apt-get update
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y jq git patch curl ca-certificates
+      fi
+      command -v jq >/dev/null 2>&1 || { echo "jq required" >&2; exit 1; }
+
+      if ! command -v nix >/dev/null 2>&1; then
+        curl --proto '=https' --tlsv1.2 -sSf -L \
+          https://install.determinate.systems/nix \
+          | sh -s -- install linux --no-confirm --init none
+        # shellcheck disable=SC1091
+        . /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh || true
+        export PATH="/nix/var/nix/profiles/default/bin:$PATH"
+      fi
+      if [[ ! -S /nix/var/nix/daemon-socket/socket ]]; then
+        sudo /nix/var/nix/profiles/default/bin/nix daemon >/tmp/nix-daemon-check.log 2>&1 &
+        for _ in $(seq 1 30); do
+          [[ -S /nix/var/nix/daemon-socket/socket ]] && break
+          sleep 1
+        done
+      fi
+
+      sudo mkdir -p /etc/nix
+      if ! sudo grep -q 'accept-flake-config' /etc/nix/nix.conf 2>/dev/null; then
+        echo 'accept-flake-config = true' | sudo tee -a /etc/nix/nix.conf >/dev/null
+      fi
+      export NIX_CONFIG=$'experimental-features = nix-command flakes\naccept-flake-config = true'
+
+      bash scripts/sync-flake-path-deps.sh
+      parent="$(dirname "$PWD")"
+      [[ -f "$parent/vidya/Cargo.toml" ]] || { echo "vidya Cargo.toml missing" >&2; exit 1; }
+      [[ -f "$parent/freeq/freeq-sdk/Cargo.toml" ]] || {
+        echo "freeq-sdk Cargo.toml missing" >&2
+        exit 1
+      }
+
+      echo "--- :nix: develop (mold + rustc from flake)"
+      nix develop --option accept-flake-config true --command bash -lc '
+        set -euo pipefail
+        command -v mold >/dev/null
+        rustc --version
+        cargo --version
+        cargo clippy --manifest-path host/Cargo.toml -- -D warnings
+        cargo test --manifest-path android/Cargo.toml --lib
+      ' </dev/null
+
+  - label: ":android: APK (nixbuild.net)"
+    key: apk
+    if: build.env("BOXCI_TRIGGER") == "merge"
+    depends_on: check
+    allow_dependency_failure: true
+    command: |
+      set -euo pipefail
+      cd "${SLEEK_ROOT:?}"
+      artifacts="${BOXCI_ROOT:?}/artifacts/sleek/${BOXCI_RUN_ID:?}"
+      mkdir -p "$artifacts"
+
+      chmod +x scripts/ci-nixbuild.sh scripts/fetch-openbao-env.sh
+
+      creds_out="$(mktemp)"
+      ./scripts/ci-nixbuild.sh resolve-creds | tee "$creds_out"
+      # shellcheck disable=SC1090
+      eval "$(grep -E '^(SKIP|NIXBUILD_CREDS_ENV)=' "$creds_out")"
+      if [[ "${SKIP:-1}" == "1" ]]; then
+        echo "--- :warning: Skipping APK (no nixbuild credentials)"
+        exit 0
+      fi
+      # shellcheck disable=SC1090
+      source "$NIXBUILD_CREDS_ENV"
+
+      setup_out="$(mktemp)"
+      ./scripts/ci-nixbuild.sh setup | tee "$setup_out"
+      setup_env="$(sed -n 's/^NIXBUILD_SETUP_ENV=//p' "$setup_out" | tail -1)"
+      [[ -n "$setup_env" && -f "$setup_env" ]] || {
+        echo "ci-nixbuild setup did not emit NIXBUILD_SETUP_ENV" >&2
+        exit 1
+      }
+      # shellcheck disable=SC1090
+      source "$setup_env"
+
+      ./scripts/ci-nixbuild.sh remote-build ".#android" result-android sleek.apk
+      [[ -s result-android/sleek.apk ]] || {
+        echo "APK missing under result-android/" >&2
+        ls -la result-android >&2 || true
+        exit 1
+      }
+      cp --reflink=auto result-android/sleek.apk "$artifacts/sleek.apk"
+      ls -lh "$artifacts/sleek.apk"
+      echo "artifact=$artifacts/sleek.apk"
+
+  - label: ":package: Flatpak (nixbuild.net)"
+    key: flatpak
+    if: build.env("BOXCI_TRIGGER") == "merge"
+    depends_on: check
+    allow_dependency_failure: true
+    command: |
+      set -euo pipefail
+      cd "${SLEEK_ROOT:?}"
+      artifacts="${BOXCI_ROOT:?}/artifacts/sleek/${BOXCI_RUN_ID:?}"
+      mkdir -p "$artifacts"
+
+      chmod +x scripts/ci-nixbuild.sh scripts/fetch-openbao-env.sh
+
+      creds_out="$(mktemp)"
+      ./scripts/ci-nixbuild.sh resolve-creds | tee "$creds_out"
+      # shellcheck disable=SC1090
+      eval "$(grep -E '^(SKIP|NIXBUILD_CREDS_ENV)=' "$creds_out")"
+      if [[ "${SKIP:-1}" == "1" ]]; then
+        echo "--- :warning: Skipping Flatpak (no nixbuild credentials)"
+        exit 0
+      fi
+      # shellcheck disable=SC1090
+      source "$NIXBUILD_CREDS_ENV"
+
+      setup_out="$(mktemp)"
+      ./scripts/ci-nixbuild.sh setup | tee "$setup_out"
+      setup_env="$(sed -n 's/^NIXBUILD_SETUP_ENV=//p' "$setup_out" | tail -1)"
+      [[ -n "$setup_env" && -f "$setup_env" ]] || {
+        echo "ci-nixbuild setup did not emit NIXBUILD_SETUP_ENV" >&2
+        exit 1
+      }
+      # shellcheck disable=SC1090
+      source "$setup_env"
+
+      ./scripts/ci-nixbuild.sh remote-build ".#flatpak" result-flatpak \
+        uk.nandi.sleek.flatpak
+      bundle="result-flatpak/uk.nandi.sleek.flatpak"
+      [[ -s "$bundle" ]] || {
+        echo "Flatpak bundle missing under result-flatpak/" >&2
+        ls -lah result-flatpak >&2 || true
+        exit 1
+      }
+      cp --reflink=auto "$bundle" "$artifacts/uk.nandi.sleek.flatpak"
+      ls -lh "$artifacts/uk.nandi.sleek.flatpak"
+      echo "artifact=$artifacts/uk.nandi.sleek.flatpak"

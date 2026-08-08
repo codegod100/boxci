@@ -52,6 +52,27 @@ curl -X POST https://boxci.boxd.sh/api/runs \
 curl https://boxci.boxd.sh/api/runs
 ```
 
+## Sleek merge builds (`pipelines/sleek-merge.yml`)
+
+Builds sleek APK + Flatpak on merge to `main`, reusing sleek's `scripts/ci-nixbuild.sh`
+and nix attrs `.#android` / `.#flatpak` (same as Buildkite/GHA).
+
+**Trigger** (sets `BOXCI_TRIGGER=merge`):
+
+- GitHub: sleek `.github/workflows/boxci-merge.yml` on push to `main`
+- Manual: `./scripts/boxci/dispatch-merge.sh` from the sleek repo
+- curl:
+
+```bash
+curl -X POST https://boxci.boxd.sh/api/runs \
+  -H 'Content-Type: application/json' \
+  -d '{"pipeline":"sleek-merge.yml","env":{"BOXCI_TRIGGER":"merge","GIT_SHA":"<commit>"}}'
+```
+
+**VM setup** (boxd): clone sleek to `/home/boxd/sleek` (or override `SLEEK_ROOT`),
+set `NIXBUILD_TOKEN` or `OPENBAO_TOKEN` in the boxci service environment.
+Artifacts: `$BOXCI_ROOT/artifacts/sleek/<run-id>/`.
+
 ## Project layout
 
 | Path | Purpose |
