@@ -29,6 +29,15 @@ bk_cursor_agent_cmd() {
   return 1
 }
 
+# cursor-agent status only reflects interactive login; CURSOR_API_KEY auth works
+# for --print runs without changing status output.
+bk_cursor_authenticated() {
+  [[ -n "${CURSOR_API_KEY:-}" ]] && return 0
+  local cmd
+  cmd="$(bk_cursor_agent_cmd)" || return 1
+  "$cmd" status >/dev/null 2>&1
+}
+
 bk_repo_root() {
   git rev-parse --show-toplevel 2>/dev/null || bk_die "not inside a git repository"
 }

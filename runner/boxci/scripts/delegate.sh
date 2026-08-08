@@ -45,7 +45,10 @@ else
   echo "error: cursor-agent / agent not found on PATH (tried ~/.cursor/bin ~/.local/bin)" >&2
   exit 127
 fi
-"$AGENT_BIN" status >/dev/null 2>&1 || { echo "error: Cursor CLI not authenticated (set CURSOR_API_KEY or run: $AGENT_BIN login)" >&2; exit 1; }
+bk_cursor_authenticated || {
+  echo "error: Cursor CLI not authenticated (set CURSOR_API_KEY or run: $AGENT_BIN login)" >&2
+  exit 1
+}
 
 args=(--print --output-format "$output_format")
 [[ -n "$model" ]] && args+=(--model "$model")

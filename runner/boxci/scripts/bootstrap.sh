@@ -141,7 +141,7 @@ verify_auth() {
   if [[ -z "${CURSOR_API_KEY:-}" ]]; then
     bk_die "CURSOR_API_KEY is not set — add it as a Buildkite cluster secret (policy must allow sleek-5u9xbr)"
   fi
-  if ! "$cmd" status >/dev/null 2>&1; then
+  if ! bk_cursor_authenticated; then
     bk_die "Cursor CLI auth failed — check CURSOR_API_KEY"
   fi
 }
@@ -420,6 +420,21 @@ ensure_rid_in_storage() {
 # Garden HTTPS checkouts only have `origin` → https://…garden….git.
 # Seed RID into local storage, then link the working tree + add `rad` remote
 # so `git push rad` works.
+# git-remote-rad reads user.name/email from git config when opening patches.
+ensure_git_identity() {
+  local root
+  root="$(bk_repo_root)"
+  if ! git config --global user.name >/dev/null 2>&1; then
+    git config --global user.name "sleek-ci"
+    git config --global user.email "sleek-ci@radicle.local"
+    echo "[bootstrap] set global git user.name/email for patch push"
+  fi
+  if ! git -C "$root" config user.name >/dev/null 2>&1; then
+    git -C "$root" config user.name "sleek-ci"
+    git -C "$root" config user.email "sleek-ci@radicle.local"
+  fi
+}
+
 ensure_rad_remote() {
   local root rid_naked
   root="$(bk_repo_root)"
@@ -468,6 +483,7 @@ setup_radicle_identity() {
   ensure_rad_passphrase_env
   start_rad_node
   ensure_rad_remote
+  ensure_git_identity
 
   echo "[bootstrap] Radicle identity ready: $(rad self --alias 2>/dev/null || echo '?') $(rad self --did 2>/dev/null || true)"
 }

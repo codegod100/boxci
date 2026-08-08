@@ -39,6 +39,15 @@ def serialize_run(run: RunResult) -> dict:
         "finished_at": run.finished_at,
         "duration_s": (run.finished_at or time.time()) - run.started_at,
         "env": run.env,
+        "artifacts": [
+            {
+                "name": a.name,
+                "url": a.url,
+                "size": a.size,
+                "b2_key": a.b2_key,
+            }
+            for a in run.artifacts
+        ],
         "steps": [
             {
                 "key": s.key,

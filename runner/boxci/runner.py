@@ -14,6 +14,8 @@ from typing import Any
 
 import yaml
 
+from boxci.artifacts import ArtifactInfo
+
 
 @dataclass
 class StepResult:
@@ -34,6 +36,7 @@ class RunResult:
     finished_at: float | None = None
     env: dict[str, str] = field(default_factory=dict)
     steps: list[StepResult] = field(default_factory=list)
+    artifacts: list[ArtifactInfo] = field(default_factory=list)
 
 
 def _merge_env(base: dict[str, str], extra: dict[str, Any] | None) -> dict[str, str]:
@@ -200,6 +203,21 @@ def run_pipeline(
     if run.status == "running":
         run.status = "passed"
     run.finished_at = time.time()
+
+    from boxci.artifacts import attach_artifact_urls, upload_run_artifacts
+
+    boxci_root = Path(base_env.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
+    try:
+        uploaded = upload_run_artifacts(boxci_root=boxci_root, env=base_env)
+        run.artifacts = uploaded
+        summary = attach_artifact_urls(run.steps, uploaded)
+        if summary and run.steps:
+            run.steps[-1].output = (run.steps[-1].output or "") + summary
+    except Exception as exc:  # noqa: BLE001 — B2 upload must not fail the run
+        note = f"\n=== B2 artifact upload skipped: {exc} ===\n"
+        if run.steps:
+            run.steps[-1].output = (run.steps[-1].output or "") + note
+
     return run
 
 
