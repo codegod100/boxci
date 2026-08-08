@@ -22,6 +22,7 @@ app = Flask(__name__)
 
 ROOT = Path(os.environ.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
 PIPELINES = ROOT / "pipelines"
+_DASHBOARD = Path(__file__).with_name("dashboard.html")
 
 
 def _check_webhook_secret(raw_body: bytes) -> tuple[bool, tuple[Response, int] | None]:
@@ -88,40 +89,7 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
 
 @app.get("/")
 def index() -> Response:
-    html = """<!DOCTYPE html>
-<html><head><meta charset=utf-8><title>boxci</title>
-<style>
-body{font-family:system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem}
-code{background:#f4f4f4;padding:.2em .4em;border-radius:4px}
-pre{background:#111;color:#eee;padding:1rem;overflow:auto;border-radius:8px}
-.ok{color:#0a0}.fail{color:#c00}
-</style></head><body>
-<h1>boxci</h1>
-<p>Minimal Nix-flake CI engine — repos carry <code>.boxci/pipeline.yml</code>.</p>
-<h2>API</h2>
-<ul>
-<li><code>GET /api/pipelines</code> — list legacy central pipelines</li>
-<li><code>POST /api/runs</code> — run a central pipeline <code>{"pipeline":"example.yml","env":{}}</code></li>
-<li><code>POST /api/runs/from-repo</code> — checkout repo + run its <code>.boxci</code></li>
-<li><code>POST /api/webhooks/garden</code> — Garden merge webhook (auto-routes issue COBs)</li>
-<li><code>POST /api/webhooks/garden/issue</code> — Garden issue open → builtin cursor-agent</li>
-<li><code>POST /api/poll</code> — scheduled issue poll (builtin — lists COBs, dispatches agents)</li>
-<li><code>GET /api/runs</code> — list runs</li>
-<li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
-</ul>
-<h2>Webhooks</h2>
-<pre>curl -X POST https://boxci.boxd.sh/api/webhooks/garden \\
-  -H 'Content-Type: application/json' \\
-  -d '{"commit":"&lt;sha&gt;","branch":"main","repo":"rad:z9mj..."}'
-
-curl -X POST https://boxci.boxd.sh/api/webhooks/garden/issue \\
-  -H 'Content-Type: application/json' \\
-  -d '{"commit":"&lt;issue-cob-id&gt;","repo":"rad:z9mj..."}'
-
-curl -X POST https://boxci.boxd.sh/api/poll \\
-  -H 'Content-Type: application/json' \\
-  -d '{"repo":"rad:z9mj..."}'</pre>
-</body></html>"""
+    html = _DASHBOARD.read_text(encoding="utf-8")
     return Response(html, mimetype="text/html")
 
 

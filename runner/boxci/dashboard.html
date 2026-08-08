@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>boxci</title>
+<style>
+:root {
+  --bg: #0c0e12;
+  --surface: #141820;
+  --surface2: #1c2230;
+  --border: #2a3344;
+  --text: #e8e4dc;
+  --muted: #8b93a7;
+  --accent: #6b9fd4;
+  --cream: #f0ebe0;
+  --ok: #3dd68c;
+  --fail: #f07178;
+  --warn: #e6b450;
+  --run: #58a6ff;
+  --skip: #6e7681;
+  --mono: "SF Mono", "Cascadia Code", "Fira Code", ui-monospace, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", sans-serif;
+  --radius: 10px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+html { color-scheme: dark; }
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.wrap { max-width: 1100px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem 1.5rem;
+  margin-bottom: 1.75rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.logo {
+  display: flex;
+  align-items: center;
+  gap: .65rem;
+}
+.logo-mark {
+  width: 36px; height: 36px;
+  background: linear-gradient(135deg, #2d4a7c 0%, #1a2840 100%);
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: .85rem;
+  color: var(--cream);
+  border: 1px solid #3d5a8a;
+}
+.logo h1 { margin: 0; font-size: 1.35rem; font-weight: 600; letter-spacing: -.02em; }
+.logo p { margin: 0; font-size: .8rem; color: var(--muted); }
+
+.health {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  font-size: .82rem;
+  color: var(--muted);
+}
+.health-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--skip);
+}
+.health-dot.ok { background: var(--ok); box-shadow: 0 0 8px rgba(61,214,140,.4); }
+.health-dot.err { background: var(--fail); }
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: .75rem;
+  margin-bottom: 1.5rem;
+}
+.stat {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .85rem 1rem;
+}
+.stat .n { font-size: 1.5rem; font-weight: 600; line-height: 1.2; }
+.stat .l { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.stat.running .n { color: var(--run); }
+.stat.passed .n { color: var(--ok); }
+.stat.failed .n { color: var(--fail); }
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .75rem;
+  margin-bottom: 1rem;
+}
+.toolbar h2 { margin: 0; font-size: 1rem; font-weight: 600; flex: 1; }
+.refresh-note { font-size: .78rem; color: var(--muted); }
+.btn {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: .35rem .75rem;
+  border-radius: 6px;
+  font-size: .8rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+
+.runs { display: flex; flex-direction: column; gap: .65rem; }
+
+.run {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color .15s;
+}
+.run:hover { border-color: #3a4558; }
+.run.running { border-left: 3px solid var(--run); }
+.run.passed { border-left: 3px solid var(--ok); }
+.run.failed { border-left: 3px solid var(--fail); }
+
+.run-head {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: .75rem 1rem;
+  padding: .85rem 1rem;
+  cursor: pointer;
+  align-items: start;
+}
+.run-head:hover { background: rgba(255,255,255,.02); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .2rem .55rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.badge.running { background: rgba(88,166,255,.15); color: var(--run); }
+.badge.passed { background: rgba(61,214,140,.12); color: var(--ok); }
+.badge.failed { background: rgba(240,113,120,.12); color: var(--fail); }
+
+.run-meta { min-width: 0; }
+.run-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: .4rem .75rem;
+  margin-bottom: .25rem;
+}
+.run-id {
+  font-family: var(--mono);
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--cream);
+}
+.run-pipeline {
+  font-size: .82rem;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.run-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .85rem;
+  font-size: .78rem;
+  color: var(--muted);
+}
+.run-sub span { display: inline-flex; align-items: center; gap: .25rem; }
+.tag {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  padding: .1rem .45rem;
+  border-radius: 4px;
+  font-size: .72rem;
+  color: var(--text);
+}
+.tag.trigger { border-color: #3d5a8a; color: var(--accent); }
+
+.run-times {
+  text-align: right;
+  font-size: .78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.run-times .dur {
+  display: block;
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--text);
+  margin-bottom: .15rem;
+}
+
+.run-body {
+  display: none;
+  border-top: 1px solid var(--border);
+  padding: .85rem 1rem 1rem;
+  background: rgba(0,0,0,.15);
+}
+.run.open .run-body { display: block; }
+
+.steps { margin-bottom: .85rem; }
+.steps h4, .artifacts h4 {
+  margin: 0 0 .5rem;
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--muted);
+}
+
+.step {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: .45rem;
+  overflow: hidden;
+  background: var(--surface2);
+}
+.step-head {
+  display: flex;
+  align-items: center;
+  gap: .6rem;
+  padding: .5rem .75rem;
+  cursor: pointer;
+  font-size: .82rem;
+}
+.step-head:hover { background: rgba(255,255,255,.03); }
+.step-icon { width: 1rem; text-align: center; font-size: .75rem; }
+.step-icon.passed { color: var(--ok); }
+.step-icon.failed { color: var(--fail); }
+.step-icon.running { color: var(--run); }
+.step-icon.pending, .step-icon.skipped { color: var(--skip); }
+.step-label { flex: 1; font-weight: 500; }
+.step-dur { font-family: var(--mono); font-size: .75rem; color: var(--muted); }
+.step-log {
+  display: none;
+  margin: 0;
+  padding: .65rem .75rem;
+  background: #0a0c10;
+  border-top: 1px solid var(--border);
+  font-family: var(--mono);
+  font-size: .72rem;
+  line-height: 1.45;
+  color: #b8c0cc;
+  overflow-x: auto;
+  max-height: 280px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.step.open .step-log { display: block; }
+.step-log.empty { color: var(--skip); font-style: italic; }
+
+.artifacts { margin-top: .75rem; }
+.art-list { display: flex; flex-wrap: wrap; gap: .45rem; }
+.art {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: .35rem .65rem;
+  font-size: .78rem;
+}
+.art-size { color: var(--muted); font-family: var(--mono); font-size: .72rem; }
+
+.empty-state {
+  text-align: center;
+  padding: 3rem 1rem;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+.empty-state p { margin: .35rem 0; }
+
+.env-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: .35rem .75rem;
+  margin-top: .75rem;
+  font-size: .75rem;
+}
+.env-item { font-family: var(--mono); color: var(--muted); }
+.env-item kbd { color: var(--accent); font-weight: 500; }
+
+.api-section {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+}
+.api-section summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: .85rem;
+  user-select: none;
+}
+.api-section summary:hover { color: var(--text); }
+.api-section ul {
+  margin: .75rem 0 0;
+  padding-left: 1.25rem;
+  font-size: .82rem;
+  color: var(--muted);
+}
+.api-section code {
+  font-family: var(--mono);
+  font-size: .78rem;
+  background: var(--surface2);
+  padding: .15rem .4rem;
+  border-radius: 4px;
+  color: var(--cream);
+}
+
+@media (max-width: 640px) {
+  .run-head { grid-template-columns: 1fr; }
+  .run-times { text-align: left; }
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">
+      <div class="logo-mark">bx</div>
+      <div>
+        <h1>boxci</h1>
+        <p>Nix-flake CI for Radicle repos</p>
+      </div>
+    </div>
+    <div class="health">
+      <span class="health-dot" id="health-dot"></span>
+      <span id="health-text">checking…</span>
+    </div>
+  </header>
+
+  <div class="stats" id="stats">
+    <div class="stat"><div class="n" id="stat-total">—</div><div class="l">Runs</div></div>
+    <div class="stat running"><div class="n" id="stat-running">—</div><div class="l">Running</div></div>
+    <div class="stat passed"><div class="n" id="stat-passed">—</div><div class="l">Passed</div></div>
+    <div class="stat failed"><div class="n" id="stat-failed">—</div><div class="l">Failed</div></div>
+  </div>
+
+  <div class="toolbar">
+    <h2>Recent runs</h2>
+    <span class="refresh-note" id="refresh-note"></span>
+    <button class="btn" type="button" id="refresh-btn">Refresh</button>
+  </div>
+
+  <div class="runs" id="runs"></div>
+
+  <details class="api-section">
+    <summary>API reference</summary>
+    <ul>
+      <li><code>GET /health</code> — service liveness</li>
+      <li><code>GET /api/runs</code> — list recent runs</li>
+      <li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
+      <li><code>POST /api/runs/from-repo</code> — trigger repo pipeline</li>
+      <li><code>POST /api/webhooks/garden</code> — Garden merge webhook</li>
+      <li><code>POST /api/poll</code> — issue poll dispatch</li>
+    </ul>
+  </details>
+</div>
+
+<script>
+(function () {
+  const runsEl = document.getElementById('runs');
+  const openRuns = new Set();
+  const openSteps = new Set();
+  let pollTimer = null;
+  let lastFetch = null;
+
+  function fmtTime(ts) {
+    if (!ts) return '—';
+    const d = new Date(ts * 1000);
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+
+  function fmtDur(s) {
+    if (s == null || s < 0) return '—';
+    if (s < 1) return (s * 1000 | 0) + 'ms';
+    if (s < 60) return s.toFixed(1) + 's';
+    const m = Math.floor(s / 60);
+    const r = Math.round(s % 60);
+    return m + 'm ' + r + 's';
+  }
+
+  function fmtSize(n) {
+    if (n == null) return '';
+    if (n < 1024) return n + ' B';
+    if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  function pipelineName(p) {
+    if (!p) return 'unknown';
+    const parts = p.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1] || p;
+  }
+
+  function shortSha(s) {
+    if (!s) return '';
+    return s.length > 8 ? s.slice(0, 8) : s;
+  }
+
+  function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s;
+    return d.innerHTML;
+  }
+
+  function stepIcon(status) {
+    const map = { passed: '✓', failed: '✗', running: '◌', pending: '○', skipped: '–' };
+    return map[status] || '?';
+  }
+
+  async function checkHealth() {
+    const dot = document.getElementById('health-dot');
+    const text = document.getElementById('health-text');
+    try {
+      const r = await fetch('/health');
+      const j = await r.json();
+      if (j.ok) {
+        dot.className = 'health-dot ok';
+        text.textContent = 'Service healthy';
+      } else {
+        dot.className = 'health-dot err';
+        text.textContent = 'Unhealthy';
+      }
+    } catch {
+      dot.className = 'health-dot err';
+      text.textContent = 'Unreachable';
+    }
+  }
+
+  function renderRun(run) {
+    const env = run.env || {};
+    const trigger = env.BOXCI_TRIGGER || 'manual';
+    const slug = env.BOXCI_REPO_SLUG || '';
+    const branch = env.GIT_BRANCH || '';
+    const sha = env.GIT_SHA || env.RADICLE_ISSUE_ID || '';
+    const issue = env.RADICLE_ISSUE_ID || '';
+
+    const stepsHtml = (run.steps || []).map(s => {
+      const sk = run.id + ':' + s.key;
+      const open = openSteps.has(sk) ? ' open' : '';
+      const log = (s.output_tail || '').trim();
+      return `<div class="step${open}" data-step="${esc(sk)}">
+        <div class="step-head">
+          <span class="step-icon ${esc(s.status)}">${stepIcon(s.status)}</span>
+          <span class="step-label">${esc(s.label || s.key)}</span>
+          <span class="step-dur">${s.duration_s != null ? fmtDur(s.duration_s) : ''}${s.exit_code != null ? ' · exit ' + s.exit_code : ''}</span>
+        </div>
+        <pre class="step-log${log ? '' : ' empty'}">${log ? esc(log) : '(no output)'}</pre>
+      </div>`;
+    }).join('');
+
+    const artsHtml = (run.artifacts || []).length
+      ? `<div class="artifacts"><h4>Artifacts</h4><div class="art-list">${run.artifacts.map(a =>
+          `<a class="art" href="${esc(a.url)}" target="_blank" rel="noopener">${esc(a.name)}<span class="art-size">${fmtSize(a.size)}</span></a>`
+        ).join('')}</div></div>`
+      : '';
+
+    const envKeys = ['BOXCI_TRIGGER', 'BOXCI_REPO_SLUG', 'BOXCI_REPO_URL', 'GIT_BRANCH', 'GIT_SHA', 'RADICLE_ISSUE_ID', 'BOXCI_RUN_ID'];
+    const envHtml = envKeys.filter(k => env[k]).length
+      ? `<div class="env-grid">${envKeys.filter(k => env[k]).map(k =>
+          `<div class="env-item"><kbd>${esc(k)}</kbd> ${esc(env[k])}</div>`
+        ).join('')}</div>`
+      : '';
+
+    const open = openRuns.has(run.id) ? ' open' : '';
+
+    return `<article class="run ${esc(run.status)}${open}" data-run="${esc(run.id)}">
+      <div class="run-head">
+        <span class="badge ${esc(run.status)}">${esc(run.status)}</span>
+        <div class="run-meta">
+          <div class="run-title">
+            <span class="run-id">${esc(run.id)}</span>
+            <span class="run-pipeline" title="${esc(run.pipeline || '')}">${esc(pipelineName(run.pipeline))}</span>
+          </div>
+          <div class="run-sub">
+            <span><span class="tag trigger">${esc(trigger)}</span></span>
+            ${slug ? `<span class="tag">${esc(slug)}</span>` : ''}
+            ${branch ? `<span>branch <code>${esc(branch)}</code></span>` : ''}
+            ${sha ? `<span>sha <code>${esc(shortSha(sha))}</code></span>` : ''}
+            ${issue && issue !== sha ? `<span>issue <code>${esc(shortSha(issue))}</code></span>` : ''}
+          </div>
+        </div>
+        <div class="run-times">
+          <span class="dur">${fmtDur(run.duration_s)}</span>
+          <span>${fmtTime(run.started_at)}</span>
+          ${run.finished_at ? `<span>→ ${fmtTime(run.finished_at)}</span>` : '<span>in progress</span>'}
+        </div>
+      </div>
+      <div class="run-body">
+        <div class="steps"><h4>Steps (${(run.steps || []).length})</h4>${stepsHtml || '<p class="empty-state" style="padding:1rem">No steps yet</p>'}</div>
+        ${artsHtml}
+        ${envHtml}
+      </div>
+    </article>`;
+  }
+
+  function bindEvents() {
+    runsEl.querySelectorAll('.run-head').forEach(el => {
+      el.onclick = () => {
+        const run = el.closest('.run');
+        const id = run.dataset.run;
+        if (openRuns.has(id)) openRuns.delete(id); else openRuns.add(id);
+        run.classList.toggle('open');
+      };
+    });
+    runsEl.querySelectorAll('.step-head').forEach(el => {
+      el.onclick = (e) => {
+        e.stopPropagation();
+        const step = el.closest('.step');
+        const sk = step.dataset.step;
+        if (openSteps.has(sk)) openSteps.delete(sk); else openSteps.add(sk);
+        step.classList.toggle('open');
+      };
+    });
+  }
+
+  async function loadRuns() {
+    try {
+      const r = await fetch('/api/runs');
+      const j = await r.json();
+      const runs = j.runs || [];
+      lastFetch = new Date();
+
+      document.getElementById('stat-total').textContent = runs.length;
+      document.getElementById('stat-running').textContent = runs.filter(x => x.status === 'running').length;
+      document.getElementById('stat-passed').textContent = runs.filter(x => x.status === 'passed').length;
+      document.getElementById('stat-failed').textContent = runs.filter(x => x.status === 'failed').length;
+
+      if (!runs.length) {
+        runsEl.innerHTML = '<div class="empty-state"><p>No runs yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
+      } else {
+        runsEl.innerHTML = runs.map(renderRun).join('');
+        bindEvents();
+      }
+
+      const hasRunning = runs.some(x => x.status === 'running');
+      document.getElementById('refresh-note').textContent =
+        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+
+      schedulePoll(hasRunning);
+    } catch (e) {
+      runsEl.innerHTML = '<div class="empty-state"><p>Failed to load runs</p><p>' + esc(String(e)) + '</p></div>';
+    }
+  }
+
+  function schedulePoll(hasRunning) {
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = setTimeout(loadRuns, hasRunning ? 5000 : 30000);
+  }
+
+  document.getElementById('refresh-btn').onclick = () => { loadRuns(); checkHealth(); };
+
+  checkHealth();
+  loadRuns();
+  setInterval(checkHealth, 60000);
+})();
+</script>
+</body>
+</html>
