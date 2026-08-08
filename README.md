@@ -80,6 +80,23 @@ Example payload (Garden/broker):
 
 boxci resolves `repo` → `https://nandi.radicle.garden/<naked-rid>.git`, checks out the commit, and runs `.boxci/pipeline.yml` when `on:` includes `merge`.
 
+**Register on `nandi.radicle.garden`** (Radicle webhooks-adapter Postgres, or age-encrypted
+`.radicle/webhooks/*.yaml` in the repo). Example DB row for sleek merge builds:
+
+```sql
+INSERT INTO webhook (repo_id, url, secret, content_type)
+VALUES (
+  'z9mjPzpVK472QXaaP1picc5U9xBR',
+  'https://boxci.boxd.sh/api/webhooks/garden',
+  '',
+  'application/json'
+);
+```
+
+If the adapter pipes to a script instead of a URL, use
+`sleek/scripts/boxci/webhook-to-boxci.sh` (forwards broker JSON to boxci). Issue COBs
+route to `/api/webhooks/garden/issue`; merge/patch to `/api/webhooks/garden`.
+
 Optional shared secret: set `BOXCI_WEBHOOK_SECRET` on the VM and send header `X-Boxci-Secret: <secret>`.
 
 ### Issue → cursor-agent → patch
