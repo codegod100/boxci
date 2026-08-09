@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -9,23 +10,215 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from boxci.artifacts import ArtifactInfo
 from boxci.job import publish_job_finished, publish_job_started
-from boxci.runner import RunResult, run_pipeline
+from boxci.runner import RunResult, StepResult, run_pipeline
 
 RUNS: dict[str, RunResult] = {}
 _LOCK = threading.Lock()
 
+_MAX_STEP_OUTPUT_CHARS = 100_000
 
-def _boxci_root_from_env(extra_env: dict[str, str]) -> Path:
-    raw = extra_env.get("BOXCI_ROOT") or os.environ.get("BOXCI_ROOT")
+
+def _boxci_root_from_env(extra_env: dict[str, str] | None = None) -> Path:
+    env = extra_env or {}
+    raw = env.get("BOXCI_ROOT") or os.environ.get("BOXCI_ROOT")
     if raw:
         return Path(raw)
     return Path(__file__).resolve().parents[2]
 
 
-def store_run(run: RunResult) -> RunResult:
+def _runs_dir(boxci_root: Path) -> Path:
+    return boxci_root / "state" / "runs"
+
+
+def _run_state_path(boxci_root: Path, run_id: str) -> Path:
+    return _runs_dir(boxci_root) / f"{run_id}.json"
+
+
+def _sanitize_env(env: dict[str, str] | None) -> dict[str, str]:
+    """Drop secrets before persisting or returning run env."""
+    out: dict[str, str] = {}
+    for k, v in (env or {}).items():
+        ku = k.upper()
+        if any(
+            s in ku
+            for s in (
+                "SECRET",
+                "TOKEN",
+                "PASSWORD",
+                "PASSPHRASE",
+                "PRIVATE_KEY",
+                "_KEY_ID",
+            )
+        ) or ku.endswith("_KEY") or ku.endswith("_KEY_ID"):
+            continue
+        out[k] = v
+    return out
+
+
+def _clip_output(text: str, *, max_chars: int = _MAX_STEP_OUTPUT_CHARS) -> str:
+    if not text or len(text) <= max_chars:
+        return text or ""
+    return text[-max_chars:]
+
+
+def _run_to_payload(run: RunResult) -> dict:
+    return {
+        "id": run.id,
+        "pipeline": run.pipeline,
+        "status": run.status,
+        "started_at": run.started_at,
+        "finished_at": run.finished_at,
+        "env": _sanitize_env(run.env),
+        "steps": [
+            {
+                "key": s.key,
+                "label": s.label,
+                "status": s.status,
+                "exit_code": s.exit_code,
+                "duration_s": s.duration_s,
+                "output": _clip_output(s.output or ""),
+            }
+            for s in run.steps
+        ],
+        "artifacts": [
+            {
+                "name": a.name,
+                "path": a.path,
+                "b2_key": a.b2_key,
+                "url": a.url,
+                "size": a.size,
+            }
+            for a in run.artifacts
+        ],
+    }
+
+
+def _run_from_payload(data: dict) -> RunResult | None:
+    run_id = str(data.get("id") or "").strip()
+    if not run_id:
+        return None
+    steps: list[StepResult] = []
+    for raw in data.get("steps") or []:
+        if not isinstance(raw, dict):
+            continue
+        steps.append(
+            StepResult(
+                key=str(raw.get("key") or ""),
+                label=str(raw.get("label") or raw.get("key") or ""),
+                status=str(raw.get("status") or "pending"),
+                exit_code=raw.get("exit_code"),
+                duration_s=float(raw.get("duration_s") or 0.0),
+                output=str(raw.get("output") or ""),
+            )
+        )
+    artifacts: list[ArtifactInfo] = []
+    for raw in data.get("artifacts") or []:
+        if not isinstance(raw, dict):
+            continue
+        artifacts.append(
+            ArtifactInfo(
+                name=str(raw.get("name") or ""),
+                path=str(raw.get("path") or ""),
+                b2_key=str(raw.get("b2_key") or ""),
+                url=str(raw.get("url") or ""),
+                size=int(raw.get("size") or 0),
+            )
+        )
+    env = data.get("env") if isinstance(data.get("env"), dict) else {}
+    run = RunResult(
+        id=run_id,
+        pipeline=str(data.get("pipeline") or ""),
+        status=str(data.get("status") or "failed"),
+        started_at=float(data.get("started_at") or 0.0),
+        finished_at=(
+            float(data["finished_at"])
+            if data.get("finished_at") is not None
+            else None
+        ),
+        env={str(k): str(v) for k, v in env.items() if v is not None},
+        steps=steps,
+        artifacts=artifacts,
+    )
+    # Process died mid-run — don't keep "running" forever after restart.
+    if run.status == "running":
+        run.status = "failed"
+        run.finished_at = run.finished_at or time.time()
+        for step in run.steps:
+            if step.status == "running":
+                step.status = "failed"
+                if not (step.output or "").strip():
+                    step.output = "(interrupted by boxci restart)\n"
+    return run
+
+
+def persist_run(run: RunResult, *, boxci_root: Path | None = None) -> None:
+    """Write run metadata to $BOXCI_ROOT/state/runs/<id>.json."""
+    root = boxci_root or _boxci_root_from_env(run.env)
+    path = _run_state_path(root, run.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = _run_to_payload(run)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def load_run_from_disk(run_id: str, *, boxci_root: Path) -> RunResult | None:
+    path = _run_state_path(boxci_root, run_id)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return _run_from_payload(data)
+
+
+def list_persisted_runs(
+    *,
+    boxci_root: Path,
+    repo: str | None = None,
+    exclude_ids: set[str] | None = None,
+    limit: int | None = None,
+) -> list[RunResult]:
+    """Load finished (and interrupted) runs from state/runs/."""
+    root = _runs_dir(boxci_root)
+    if not root.is_dir():
+        return []
+    exclude = exclude_ids or set()
+    found: list[RunResult] = []
+    for path in root.glob("*.json"):
+        run_id = path.stem
+        if run_id in exclude:
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        run = _run_from_payload(data)
+        if run is None:
+            continue
+        if repo and not run_matches_repo(run, repo):
+            continue
+        found.append(run)
+    found.sort(key=_run_recency, reverse=True)
+    if limit is not None:
+        return found[:limit]
+    return found
+
+
+def store_run(run: RunResult, *, boxci_root: Path | None = None) -> RunResult:
     with _LOCK:
         RUNS[run.id] = run
+    try:
+        persist_run(run, boxci_root=boxci_root)
+    except OSError as exc:
+        print(f"[runs] persist failed for {run.id}: {exc}", flush=True)
     return run
 
 
@@ -35,7 +228,7 @@ def get_run(run_id: str) -> RunResult | None:
 
 
 def find_run(run_id: str, *, boxci_root: Path | None = None) -> RunResult | None:
-    """Find a run in memory or as an on-disk artifact stub."""
+    """Find a run in memory, persisted state, or as an on-disk artifact stub."""
     run_id = (run_id or "").strip()
     if not run_id:
         return None
@@ -44,6 +237,13 @@ def find_run(run_id: str, *, boxci_root: Path | None = None) -> RunResult | None
         return hit
     if boxci_root is None:
         return None
+
+    persisted = load_run_from_disk(run_id, boxci_root=boxci_root)
+    if persisted is not None:
+        with _LOCK:
+            RUNS[run_id] = persisted
+        return persisted
+
     from boxci.artifacts import list_run_artifacts_fast
 
     arts_root = boxci_root / "artifacts"
@@ -249,6 +449,11 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
 
     memory_ids = {run.id for run in runs}
 
+    if boxci_root is not None:
+        for run in list_persisted_runs(boxci_root=boxci_root, exclude_ids=memory_ids):
+            runs.append(run)
+            memory_ids.add(run.id)
+
     for run in runs:
         env = run.env or {}
         slug = run_repo_slug(env)
@@ -355,25 +560,6 @@ def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
 
         hydrate_run_artifacts(run, boxci_root=boxci_root)
 
-    def _public_env(env: dict[str, str] | None) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for k, v in (env or {}).items():
-            ku = k.upper()
-            if any(
-                s in ku
-                for s in (
-                    "SECRET",
-                    "TOKEN",
-                    "PASSWORD",
-                    "PASSPHRASE",
-                    "PRIVATE_KEY",
-                    "_KEY_ID",
-                )
-            ) or ku.endswith("_KEY") or ku.endswith("_KEY_ID"):
-                continue
-            out[k] = v
-        return out
-
     return {
         "id": run.id,
         "pipeline": run.pipeline,
@@ -381,7 +567,7 @@ def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
         "started_at": run.started_at,
         "finished_at": run.finished_at,
         "duration_s": (run.finished_at or time.time()) - run.started_at,
-        "env": _public_env(run.env),
+        "env": _sanitize_env(run.env),
         "artifacts": [
             {
                 "name": a.name,

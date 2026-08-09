@@ -17,6 +17,7 @@ from boxci.runs import (
     find_run,
     list_artifact_disk_runs,
     list_known_repos,
+    list_persisted_runs,
     list_runs,
     run_repo_slug,
     serialize_run,
@@ -99,13 +100,20 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
 
 def _merged_runs(*, repo: str | None = None, limit: int = 50) -> list:
     memory = list_runs(repo=repo)
+    seen = {r.id for r in memory}
+    persisted = list_persisted_runs(
+        boxci_root=ROOT,
+        repo=repo,
+        exclude_ids=seen,
+    )
+    seen.update(r.id for r in persisted)
     disk = list_artifact_disk_runs(
         boxci_root=ROOT,
         repo=repo,
-        exclude_ids={r.id for r in memory},
+        exclude_ids=seen,
     )
     return sorted(
-        [*memory, *disk],
+        [*memory, *persisted, *disk],
         key=lambda r: r.finished_at or r.started_at,
         reverse=True,
     )[:limit]
