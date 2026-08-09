@@ -91,6 +91,7 @@ header {
   gap: .75rem;
   margin-bottom: 1.5rem;
 }
+.stats[hidden] { display: none; }
 .stat {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -426,7 +427,7 @@ header {
 
   <div id="crumb" class="crumb" hidden></div>
 
-  <div class="stats" id="stats" hidden>
+  <div class="stats" id="stats">
     <div class="stat"><div class="n" id="stat-total">—</div><div class="l">Runs</div></div>
     <div class="stat running"><div class="n" id="stat-running">—</div><div class="l">Running</div></div>
     <div class="stat passed"><div class="n" id="stat-passed">—</div><div class="l">Passed</div></div>
@@ -686,12 +687,26 @@ header {
     </a>`;
   }
 
+  function applyStats(runs) {
+    document.getElementById('stat-total').textContent = runs.length;
+    document.getElementById('stat-running').textContent = runs.filter(x => x.status === 'running').length;
+    document.getElementById('stat-passed').textContent = runs.filter(x => x.status === 'passed').length;
+    document.getElementById('stat-failed').textContent = runs.filter(x => x.status === 'failed').length;
+  }
+
   async function loadRepos() {
     try {
-      const r = await fetch('/api/repos');
-      const j = await r.json();
+      const [reposRes, runsRes] = await Promise.all([
+        fetch('/api/repos'),
+        fetch('/api/runs'),
+      ]);
+      const j = await reposRes.json();
+      const runsJ = await runsRes.json();
       const repos = j.repos || [];
+      const runs = runsJ.runs || [];
       lastFetch = new Date();
+
+      applyStats(runs);
 
       if (!repos.length) {
         reposEl.innerHTML = '<div class="empty-state"><p>No repos yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
@@ -699,9 +714,10 @@ header {
         reposEl.innerHTML = repos.map(renderRepo).join('');
       }
 
+      const hasRunning = runs.some(x => x.status === 'running');
       document.getElementById('refresh-note').textContent =
-        'Updated ' + lastFetch.toLocaleTimeString() + ' · polling every 30s';
-      schedulePoll(false);
+        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+      schedulePoll(hasRunning);
     } catch (e) {
       reposEl.innerHTML = '<div class="empty-state"><p>Failed to load repos</p><p>' + esc(String(e)) + '</p></div>';
     }
@@ -714,10 +730,7 @@ header {
       const runs = (j.runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
       lastFetch = new Date();
 
-      document.getElementById('stat-total').textContent = runs.length;
-      document.getElementById('stat-running').textContent = runs.filter(x => x.status === 'running').length;
-      document.getElementById('stat-passed').textContent = runs.filter(x => x.status === 'passed').length;
-      document.getElementById('stat-failed').textContent = runs.filter(x => x.status === 'failed').length;
+      applyStats(runs);
 
       if (!runs.length) {
         runsEl.innerHTML = '<div class="empty-state"><p>No runs for this repo</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
@@ -744,14 +757,12 @@ header {
   function setupPage() {
     const title = document.getElementById('page-title');
     const crumb = document.getElementById('crumb');
-    const stats = document.getElementById('stats');
 
     if (isRepoPage) {
       document.title = 'boxci · ' + repoKey;
       title.textContent = 'Build history';
       crumb.hidden = false;
       crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><span class="here" title="${esc(repoKey)}">${esc(repoKey.length > 24 ? shortSha(repoKey) + '…' : repoKey)}</span>`;
-      stats.hidden = false;
       reposEl.hidden = true;
       runsEl.hidden = false;
       // Prefer display name from repos API when available
@@ -768,7 +779,6 @@ header {
       document.title = 'boxci';
       title.textContent = 'Repositories';
       crumb.hidden = true;
-      stats.hidden = true;
       reposEl.hidden = false;
       runsEl.hidden = true;
     }
