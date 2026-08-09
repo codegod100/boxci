@@ -1,14 +1,14 @@
-"""Upload run artifacts to Backblaze B2 and expose download URLs."""
+"""Discover run artifacts, optionally upload to Backblaze B2, and expose download URLs."""
 
 from __future__ import annotations
 
 import base64
 import json
 import os
-import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import quote
 
 
 @dataclass
@@ -35,6 +35,16 @@ def b2_configured() -> bool:
         os.environ.get("B2_APPLICATION_KEY_ID", "").strip()
         and os.environ.get("B2_APPLICATION_KEY", "").strip()
     )
+
+
+def public_base_url() -> str:
+    return os.environ.get("BOXCI_PUBLIC_URL", "").strip().rstrip("/")
+
+
+def local_artifact_url(slug: str, run_id: str, name: str) -> str:
+    path = f"/artifacts/{quote(slug, safe='')}/{quote(run_id, safe='')}/{quote(name, safe='')}"
+    base = public_base_url()
+    return f"{base}{path}" if base else path
 
 
 def _b2_request(url: str, token: str, payload: dict | None = None) -> dict:
@@ -102,7 +112,6 @@ def _download_url(auth: _B2Auth, b2_key: str) -> str:
         },
     )
     token = dl_auth["authorizationToken"]
-    from urllib.parse import quote
 
     return (
         f"{auth.download_url}/file/{auth.bucket_name}/{quote(b2_key, safe='/')}"
@@ -158,12 +167,45 @@ def artifacts_dir_for_run(boxci_root: Path, env: dict[str, str]) -> Path | None:
     return None
 
 
+def _run_identity(art_dir: Path, env: dict[str, str]) -> tuple[str, str]:
+    slug = (env.get("BOXCI_REPO_SLUG") or "").strip() or art_dir.parent.name
+    run_id = (env.get("BOXCI_RUN_ID") or "").strip() or art_dir.name
+    return slug, run_id
+
+
+def list_local_artifacts(
+    *,
+    boxci_root: Path,
+    env: dict[str, str],
+) -> list[ArtifactInfo]:
+    """Return ArtifactInfo entries for files on disk, with local download URLs."""
+    art_dir = artifacts_dir_for_run(boxci_root, env)
+    if not art_dir:
+        return []
+
+    files = sorted(p for p in art_dir.iterdir() if p.is_file())
+    if not files:
+        return []
+
+    slug, run_id = _run_identity(art_dir, env)
+    return [
+        ArtifactInfo(
+            name=path.name,
+            path=str(path),
+            b2_key="",
+            url=local_artifact_url(slug, run_id, path.name),
+            size=path.stat().st_size,
+        )
+        for path in files
+    ]
+
+
 def upload_run_artifacts(
     *,
     boxci_root: Path,
     env: dict[str, str],
 ) -> list[ArtifactInfo]:
-    """Upload files from the run artifacts directory. Soft-skips if B2 is not configured."""
+    """Upload files from the run artifacts directory to B2. Raises on B2 errors."""
     if not b2_configured():
         return []
 
@@ -175,8 +217,7 @@ def upload_run_artifacts(
     if not files:
         return []
 
-    slug = env.get("BOXCI_REPO_SLUG") or art_dir.parent.name
-    run_id = env.get("BOXCI_RUN_ID") or art_dir.name
+    slug, run_id = _run_identity(art_dir, env)
     prefix = os.environ.get("B2_KEY_PREFIX", "artifacts").strip().strip("/")
 
     auth = _authorize()
@@ -198,12 +239,72 @@ def upload_run_artifacts(
     return uploaded
 
 
+def collect_run_artifacts(
+    *,
+    boxci_root: Path,
+    env: dict[str, str],
+) -> list[ArtifactInfo]:
+    """Prefer B2 URLs when upload succeeds; always fall back to local download URLs."""
+    local = list_local_artifacts(boxci_root=boxci_root, env=env)
+    if not local:
+        return []
+
+    if not b2_configured():
+        return local
+
+    try:
+        uploaded = upload_run_artifacts(boxci_root=boxci_root, env=env)
+    except Exception:
+        return local
+
+    return uploaded or local
+
+
+def hydrate_run_artifacts(run, *, boxci_root: Path) -> None:
+    """If a run has files on disk but no artifact links, attach local URLs in-place."""
+    if getattr(run, "artifacts", None):
+        return
+    env = dict(getattr(run, "env", None) or {})
+    if not env.get("BOXCI_RUN_ID"):
+        env["BOXCI_RUN_ID"] = getattr(run, "id", "") or ""
+    local = list_local_artifacts(boxci_root=boxci_root, env=env)
+    if local:
+        run.artifacts = local
+
+
+def resolve_artifact_path(
+    *,
+    boxci_root: Path,
+    slug: str,
+    run_id: str,
+    filename: str,
+) -> Path | None:
+    """Resolve a safe path under artifacts/<slug>/<run_id>/<filename>."""
+    if not slug or not run_id or not filename:
+        return None
+    if "/" in filename or "\\" in filename or filename in (".", ".."):
+        return None
+    if any(part in (".", "..") for part in (slug, run_id)):
+        return None
+
+    root = (boxci_root / "artifacts").resolve()
+    candidate = (root / slug / run_id / filename).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
 def attach_artifact_urls(run_steps: list, artifacts: list[ArtifactInfo]) -> str:
     """Append artifact_url= lines to step outputs; return upload summary log."""
     if not artifacts:
         return ""
 
-    lines = ["", "=== B2 artifact upload ==="]
+    via_b2 = any(a.b2_key for a in artifacts)
+    lines = ["", "=== B2 artifact upload ===" if via_b2 else "=== Artifact links ==="]
     for art in artifacts:
         lines.append(f"artifact={art.path}")
         lines.append(f"artifact_url={art.url}")

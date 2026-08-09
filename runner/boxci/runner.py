@@ -204,17 +204,17 @@ def run_pipeline(
         run.status = "passed"
     run.finished_at = time.time()
 
-    from boxci.artifacts import attach_artifact_urls, upload_run_artifacts
+    from boxci.artifacts import attach_artifact_urls, collect_run_artifacts
 
     boxci_root = Path(base_env.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
     try:
-        uploaded = upload_run_artifacts(boxci_root=boxci_root, env=base_env)
-        run.artifacts = uploaded
-        summary = attach_artifact_urls(run.steps, uploaded)
+        collected = collect_run_artifacts(boxci_root=boxci_root, env=base_env)
+        run.artifacts = collected
+        summary = attach_artifact_urls(run.steps, collected)
         if summary and run.steps:
             run.steps[-1].output = (run.steps[-1].output or "") + summary
-    except Exception as exc:  # noqa: BLE001 — B2 upload must not fail the run
-        note = f"\n=== B2 artifact upload skipped: {exc} ===\n"
+    except Exception as exc:  # noqa: BLE001 — artifact publish must not fail the run
+        note = f"\n=== Artifact publish skipped: {exc} ===\n"
         if run.steps:
             run.steps[-1].output = (run.steps[-1].output or "") + note
 

@@ -8,8 +8,18 @@ if [[ -f /etc/profile.d/boxd-env.sh ]]; then
   source /etc/profile.d/boxd-env.sh
 fi
 
+# Optional local env (B2 keys, etc.). boxd-env.sh is only written at takeoff and
+# may miss vars added later via `boxd env set`; keep those in $ROOT/.env.
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 export BOXCI_ROOT="$ROOT"
 export BOXCI_PORT="${BOXCI_PORT:-8080}"
+export BOXCI_PUBLIC_URL="${BOXCI_PUBLIC_URL:-https://boxci.boxd.sh}"
 export PATH="$ROOT/result/bin:/nix/var/nix/profiles/default/bin:${PATH}"
 # Prefer synced runner/ over the nix-installed package (deploy/vm-build.sh may be cached).
 export PYTHONPATH="$ROOT/runner${PYTHONPATH:+:$PYTHONPATH}"

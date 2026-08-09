@@ -311,14 +311,21 @@ boxd machine exec boxci -- 'sudo systemctl restart boxci'
 
 Ensure `NIXBUILD_TOKEN` or `OPENBAO_TOKEN` is set via `boxd env set` for artifact builds.
 
-### B2 artifact storage (optional)
+### Artifact downloads
 
-After each run, boxci uploads files under `$BOXCI_ROOT/artifacts/<repo-slug>/<run-id>/` to Backblaze B2 when credentials are set. Upload is skipped silently if unset; failures do not fail the run.
+Files under `$BOXCI_ROOT/artifacts/<repo-slug>/<run-id>/` are always linked from the dashboard via `GET /artifacts/<slug>/<run-id>/<filename>` (using `BOXCI_PUBLIC_URL`).
+
+When Backblaze B2 credentials are available to the **systemd** process, boxci also uploads those files and prefers B2 download URLs. Upload failures fall back to local links and do not fail the run.
+
+`boxd env set` injects variables into `boxd machine exec` sessions, but `/etc/profile.d/boxd-env.sh` is only written at takeoff. Put B2 (and similar) secrets in `$BOXCI_ROOT/.env` so `deploy/run-server.sh` loads them under systemd:
 
 ```bash
-boxd env set B2_APPLICATION_KEY_ID '…' --secret --machine boxci
-boxd env set B2_APPLICATION_KEY '…' --secret --machine boxci
-boxd env set B2_BUCKET_NAME boxci-artifacts --machine boxci
+boxd machine exec boxci -- bash -lc 'umask 077; cat > /home/boxd/boxci/.env <<EOF
+B2_APPLICATION_KEY_ID=$B2_APPLICATION_KEY_ID
+B2_APPLICATION_KEY=$B2_APPLICATION_KEY
+B2_BUCKET_NAME=${B2_BUCKET_NAME:-boxci-artifacts}
+EOF'
+boxd machine exec boxci -- 'sudo systemctl restart boxci'
 ```
 
 | Variable | Description |
@@ -330,6 +337,4 @@ boxd env set B2_BUCKET_NAME boxci-artifacts --machine boxci
 | `B2_PUBLIC_URL_PREFIX` | Optional base URL for a public bucket, e.g. `https://f005.backblazeb2.com/file/boxci-artifacts` |
 | `B2_DOWNLOAD_VALID_SECONDS` | Download auth TTL for private buckets (max 604800) |
 
-Run API responses include `artifacts: [{name, url, size, b2_key}]`. Step logs gain `artifact_url=` lines after upload.
-
-Private buckets get time-limited download URLs (`?Authorization=…`). For permanent public links, use an `allPublic` bucket (requires B2 payment history) and set `B2_PUBLIC_URL_PREFIX`.
+Run API responses include `artifacts: [{name, url, size, b2_key}]`. Step logs gain `artifact_url=` lines after publish.

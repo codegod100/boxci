@@ -10,7 +10,7 @@ Environment=BOXCI_ROOT=/home/boxd/boxci
 Environment=BOXCI_PORT=8080
 Environment=BOXCI_PUBLIC_URL=https://boxci.boxd.sh
 Environment=BOXCI_WORKSPACE_z9mjPzpVK472QXaaP1picc5U9xBR=/home/boxd/sleek
-Environment=PATH=/home/boxd/boxci/result/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=/home/boxd/.local/bin:/home/boxd/boxci/result/bin:/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/home/boxd/boxci/deploy/run-server.sh
 Restart=on-failure
 RestartSec=3

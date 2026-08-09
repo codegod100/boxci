@@ -97,6 +97,57 @@ def list_runs(limit: int = 50, *, repo: str | None = None) -> list[RunResult]:
     return runs[:limit]
 
 
+def list_artifact_disk_runs(
+    *,
+    boxci_root: Path,
+    repo: str | None = None,
+    exclude_ids: set[str] | None = None,
+) -> list[RunResult]:
+    """Synthesize passed runs from on-disk artifact directories (survives process restart)."""
+    from boxci.artifacts import list_local_artifacts
+
+    arts_root = boxci_root / "artifacts"
+    if not arts_root.is_dir():
+        return []
+
+    exclude = exclude_ids or set()
+    found: list[RunResult] = []
+
+    for slug_dir in arts_root.iterdir():
+        if not slug_dir.is_dir() or slug_dir.name.startswith("."):
+            continue
+        for run_dir in slug_dir.iterdir():
+            if not run_dir.is_dir() or run_dir.name.startswith("."):
+                continue
+            if run_dir.name in exclude:
+                continue
+            files = [p for p in run_dir.iterdir() if p.is_file()]
+            if not files:
+                continue
+
+            env = {
+                "BOXCI_REPO_SLUG": slug_dir.name,
+                "BOXCI_RUN_ID": run_dir.name,
+                "BOXCI_TRIGGER": "artifacts",
+            }
+            stub = RunResult(
+                id=run_dir.name,
+                pipeline="(on-disk artifacts)",
+                status="passed",
+                started_at=run_dir.stat().st_mtime,
+                finished_at=run_dir.stat().st_mtime,
+                env=env,
+            )
+            if repo and not run_matches_repo(stub, repo):
+                continue
+            stub.artifacts = list_local_artifacts(boxci_root=boxci_root, env=env)
+            if stub.artifacts:
+                found.append(stub)
+
+    found.sort(key=_run_recency, reverse=True)
+    return found
+
+
 def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
     """Repos discovered from runs plus workspaces/ and artifacts/ on disk."""
     by_slug: dict[str, dict] = {}
@@ -178,7 +229,12 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
     return repos
 
 
-def serialize_run(run: RunResult) -> dict:
+def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
+    if boxci_root is not None:
+        from boxci.artifacts import hydrate_run_artifacts
+
+        hydrate_run_artifacts(run, boxci_root=boxci_root)
+
     return {
         "id": run.id,
         "pipeline": run.pipeline,

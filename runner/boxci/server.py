@@ -8,11 +8,13 @@ import json
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, request, Response
+from flask import Flask, jsonify, request, Response, send_file
 
+from boxci.artifacts import resolve_artifact_path
 from boxci.runs import (
     execute_pipeline,
     get_run,
+    list_artifact_disk_runs,
     list_known_repos,
     list_runs,
     serialize_run,
@@ -126,7 +128,18 @@ def list_repos_api():
 @app.get("/api/runs")
 def list_runs_api():
     repo = str(request.args.get("repo") or "").strip() or None
-    return jsonify({"runs": [serialize_run(r) for r in list_runs(repo=repo)]})
+    memory = list_runs(repo=repo)
+    disk = list_artifact_disk_runs(
+        boxci_root=ROOT,
+        repo=repo,
+        exclude_ids={r.id for r in memory},
+    )
+    merged = sorted(
+        [*memory, *disk],
+        key=lambda r: r.finished_at or r.started_at,
+        reverse=True,
+    )[:50]
+    return jsonify({"runs": [serialize_run(r, boxci_root=ROOT) for r in merged]})
 
 
 @app.get("/api/runs/<run_id>")
@@ -134,7 +147,20 @@ def get_run_api(run_id: str):
     run = get_run(run_id)
     if not run:
         return jsonify({"error": "not found"}), 404
-    return jsonify(serialize_run(run))
+    return jsonify(serialize_run(run, boxci_root=ROOT))
+
+
+@app.get("/artifacts/<slug>/<run_id>/<path:filename>")
+def download_artifact(slug: str, run_id: str, filename: str):
+    path = resolve_artifact_path(
+        boxci_root=ROOT,
+        slug=slug,
+        run_id=run_id,
+        filename=filename,
+    )
+    if path is None:
+        return jsonify({"error": "not found"}), 404
+    return send_file(path, as_attachment=True, download_name=path.name)
 
 
 @app.post("/api/runs")
