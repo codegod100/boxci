@@ -15,6 +15,7 @@ from urllib.parse import quote
 _MANIFEST_NAME = ".boxci-artifacts.json"
 _auth_lock = threading.Lock()
 _auth_cache: tuple[float, "_B2Auth"] | None = None
+_dl_token_cache: dict[str, tuple[float, str]] = {}
 _publish_lock = threading.Lock()
 
 
@@ -113,23 +114,43 @@ def _cached_authorize() -> _B2Auth:
         return auth
 
 
-def _download_url(auth: _B2Auth, b2_key: str) -> str:
-    prefix = os.environ.get("B2_PUBLIC_URL_PREFIX", "").strip().rstrip("/")
-    if prefix:
-        return f"{prefix}/{b2_key}"
+def _download_auth_token(auth: _B2Auth, file_name_prefix: str) -> str:
+    """Return a cached B2 download authorization token for a key prefix."""
+    now = time.time()
+    with _auth_lock:
+        hit = _dl_token_cache.get(file_name_prefix)
+        # Reuse for up to 1h (tokens themselves can live up to 7d).
+        if hit and now - hit[0] < 3600:
+            return hit[1]
 
-    # Private bucket: short-lived download authorization (max 7 days).
     valid_s = min(int(os.environ.get("B2_DOWNLOAD_VALID_SECONDS", "604800")), 604800)
     dl_auth = _b2_request(
         f"{auth.api_url}/b2api/v2/b2_get_download_authorization",
         auth.authorization_token,
         {
             "bucketId": auth.bucket_id,
-            "fileNamePrefix": b2_key,
+            "fileNamePrefix": file_name_prefix,
             "validDurationInSeconds": valid_s,
         },
     )
-    token = dl_auth["authorizationToken"]
+    token = str(dl_auth["authorizationToken"])
+    with _auth_lock:
+        _dl_token_cache[file_name_prefix] = (now, token)
+    return token
+
+
+def _download_url(auth: _B2Auth, b2_key: str) -> str:
+    prefix = os.environ.get("B2_PUBLIC_URL_PREFIX", "").strip().rstrip("/")
+    if prefix:
+        return f"{prefix}/{b2_key}"
+
+    # Private bucket: authorize once for the shared key prefix (default "artifacts/")
+    # instead of one B2 round-trip per file on every /api/runs poll.
+    key_prefix = os.environ.get("B2_KEY_PREFIX", "artifacts").strip().strip("/")
+    if key_prefix and not key_prefix.endswith("/"):
+        key_prefix = key_prefix + "/"
+    auth_prefix = key_prefix if key_prefix and b2_key.startswith(key_prefix) else b2_key
+    token = _download_auth_token(auth, auth_prefix)
 
     return (
         f"{auth.download_url}/file/{auth.bucket_name}/{quote(b2_key, safe='/')}"
@@ -320,12 +341,37 @@ def upload_run_artifacts(
     return uploaded
 
 
+def list_run_artifacts_fast(
+    *,
+    boxci_root: Path,
+    env: dict[str, str],
+) -> list[ArtifactInfo]:
+    """Fast path for API listing: never upload; B2 from manifest or local URLs."""
+    art_dir = artifacts_dir_for_run(boxci_root, env)
+    if art_dir is None:
+        return []
+
+    if b2_configured():
+        try:
+            from_manifest = _infos_from_manifest(art_dir, env)
+            if from_manifest:
+                return from_manifest
+        except Exception:
+            pass
+
+    return list_local_artifacts(boxci_root=boxci_root, env=env)
+
+
 def collect_run_artifacts(
     *,
     boxci_root: Path,
     env: dict[str, str],
 ) -> list[ArtifactInfo]:
-    """Prefer B2 URLs when available; fall back to local download URLs."""
+    """Prefer B2 URLs when available; fall back to local download URLs.
+
+    May upload to B2 when files exist but no manifest yet — use only after a run,
+    not on GET /api/runs.
+    """
     local = list_local_artifacts(boxci_root=boxci_root, env=env)
     if not local:
         return []
@@ -350,34 +396,20 @@ def collect_run_artifacts(
 
 
 def hydrate_run_artifacts(run, *, boxci_root: Path) -> None:
-    """Attach B2 (or local) artifact links for a run that has files on disk."""
+    """Attach artifact links for API responses without blocking on uploads."""
+    existing = list(getattr(run, "artifacts", None) or [])
+    if existing:
+        # Keep whatever URLs we already have (B2 or local). Refreshing private
+        # download tokens on every list made /api/runs take multiple seconds.
+        return
+
     env = dict(getattr(run, "env", None) or {})
     if not env.get("BOXCI_RUN_ID"):
         env["BOXCI_RUN_ID"] = getattr(run, "id", "") or ""
 
-    existing = list(getattr(run, "artifacts", None) or [])
-    if existing and all(getattr(a, "b2_key", "") for a in existing):
-        # Refresh time-limited private download URLs.
-        if b2_configured():
-            try:
-                auth = _cached_authorize()
-                run.artifacts = [
-                    ArtifactInfo(
-                        name=a.name,
-                        path=a.path,
-                        b2_key=a.b2_key,
-                        url=_download_url(auth, a.b2_key),
-                        size=a.size,
-                    )
-                    for a in existing
-                ]
-            except Exception:
-                pass
-        return
-
-    collected = collect_run_artifacts(boxci_root=boxci_root, env=env)
-    if collected:
-        run.artifacts = collected
+    filled = list_run_artifacts_fast(boxci_root=boxci_root, env=env)
+    if filled:
+        run.artifacts = filled
 
 
 def resolve_artifact_path(
