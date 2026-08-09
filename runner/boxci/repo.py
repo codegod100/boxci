@@ -267,28 +267,7 @@ def pipeline_supports_trigger(pipeline: dict[str, Any], trigger: str) -> bool:
     return trigger in on
 
 
-_ISSUE_COB_RE = re.compile(r"refs/cobs/xyz\.radicle\.issue/([0-9a-f]{40})$")
 _ISSUE_ID_RE = re.compile(r"^[0-9a-f]{40}$")
-
-
-def list_issue_ids(repo_url: str) -> list[str]:
-    """List xyz.radicle.issue COB ids via git ls-remote (Garden HTTPS)."""
-    proc = subprocess.run(
-        ["git", "ls-remote", repo_url],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        return []
-    ids: set[str] = set()
-    for line in proc.stdout.splitlines():
-        parts = line.split()
-        if len(parts) < 2:
-            continue
-        m = _ISSUE_COB_RE.search(parts[1])
-        if m:
-            ids.add(m.group(1))
-    return sorted(ids)
 
 
 def issue_cob_exists(issue_id: str, *, repo_url: str, repo_root: Path | None = None) -> bool:
@@ -320,15 +299,6 @@ def issue_cob_exists(issue_id: str, *, repo_url: str, repo_root: Path | None = N
         return False
     needle = f"/refs/cobs/xyz.radicle.issue/{issue_id}"
     return any(needle in line for line in proc.stdout.splitlines())
-
-
-def remote_branch_exists(repo_url: str, branch: str) -> bool:
-    proc = subprocess.run(
-        ["git", "ls-remote", "--heads", repo_url, branch],
-        capture_output=True,
-        text=True,
-    )
-    return proc.returncode == 0 and bool(proc.stdout.strip())
 
 
 def checkout_repo(

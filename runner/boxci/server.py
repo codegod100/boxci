@@ -14,7 +14,6 @@ from boxci.runs import execute_pipeline, get_run, list_runs, serialize_run, stor
 from boxci.webhooks import (
     handle_garden_issue_webhook,
     handle_garden_webhook,
-    handle_poll,
     trigger_from_repo,
 )
 
@@ -78,8 +77,6 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
     }
     if "issue_id" in result:
         payload["issue_id"] = result["issue_id"]
-    if "poll" in result:
-        payload["poll"] = result["poll"]
     if result.get("builtin"):
         payload["builtin"] = True
     if accepted:
@@ -129,7 +126,7 @@ def create_run():
     extra_env = {str(k): str(v) for k, v in (body.get("env") or {}).items()}
     async_run = body.get("async") in (True, 1, "1", "true", "yes") or extra_env.get(
         "BOXCI_TRIGGER"
-    ) in ("merge", "issue", "poll")
+    ) in ("merge", "issue")
     run = execute_pipeline(path, extra_env, cwd=ROOT, async_run=async_run)
     status = 202 if run.status == "running" else 201
     return jsonify(serialize_run(run)), status
@@ -159,7 +156,7 @@ def create_run_from_repo():
             repo_id=repo_id,
             issue_id=issue_id,
             dry_run=dry_run,
-            async_run=trigger in ("issue", "poll", "merge"),
+            async_run=trigger in ("issue", "merge"),
         )
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
@@ -221,23 +218,6 @@ def garden_issue_webhook():
         return jsonify({"error": str(exc)}), 500
 
     return _webhook_response(result, accepted=True)
-
-
-@app.post("/api/poll")
-def poll_trigger():
-    body, err = _webhook_json_body()
-    if err:
-        return err
-    try:
-        result = handle_poll(body, boxci_root=ROOT)
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 404
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
-    except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
-
-    return _webhook_response(result)
 
 
 def main() -> None:

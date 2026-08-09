@@ -1,4 +1,4 @@
-"""Built-in Radicle issue → cursor-agent → patch (webhook/manual only; poll lists)."""
+"""Built-in Radicle issue → cursor-agent → patch (webhook/manual only)."""
 
 from __future__ import annotations
 
@@ -7,13 +7,9 @@ import subprocess
 import time
 import uuid
 from pathlib import Path
-from typing import Any
-
 from boxci.repo import (
     checkout_repo,
     issue_cob_exists,
-    list_issue_ids,
-    remote_branch_exists,
     repo_slug,
     resolve_repo_name,
 )
@@ -26,10 +22,6 @@ _REPO_AGENT = "scripts/buildkite/run-issue-agent.sh"
 
 def scripts_dir() -> Path:
     return _SCRIPTS
-
-
-def issue_branch(issue_id: str) -> str:
-    return f"issue/{issue_id[:7]}"
 
 
 def resolve_radicle_rid(repo_id: str | None, slug: str) -> str:
@@ -175,85 +167,6 @@ def run_issue_agent(
         run = _run_script(script, env, cwd=workspace, label=f"Issue {issue_id[:7]} → agent")
 
     return script, env, run
-
-
-def run_poll(
-    *,
-    boxci_root: Path,
-    repo_url: str,
-    branch: str = "main",
-    repo_id: str | None = None,
-    dry_run: bool = False,
-    async_run: bool = False,
-) -> dict[str, Any]:
-    """List issue COBs for observability — never dispatch cursor-agent.
-
-    Agents only run when an issue COB itself triggers a Garden webhook (or an
-    explicit ``trigger=issue`` manual run). Poll must not start agents for
-    historical issues that merely lack an ``issue/<short>`` branch.
-    """
-    del dry_run, async_run  # retained for API compatibility; poll never dispatches
-    slug = repo_slug(repo_id or "", repo_url)
-    workspace = _repo_workspace(boxci_root, slug)
-    checkout_repo(repo_url, workspace, branch=branch, sha=None)
-
-    issue_ids = list_issue_ids(repo_url)
-    pending: list[str] = []
-    skipped: list[str] = []
-
-    for iid in issue_ids:
-        br = issue_branch(iid)
-        if remote_branch_exists(repo_url, br):
-            skipped.append(iid)
-            continue
-        pending.append(iid)
-
-    env = build_issue_env(
-        trigger="poll",
-        workspace=workspace,
-        repo_url=repo_url,
-        slug=slug,
-        branch=branch,
-        sha=_git_head(workspace),
-        repo_id=repo_id,
-    )
-    summary = (
-        f"poll: {len(issue_ids)} issue COB(s), {len(pending)} without issue/<short> branch, "
-        f"{len(skipped)} skipped (branch exists)\n"
-        "poll: not dispatching — cursor-agent only runs when an issue triggers a webhook event "
-        "(or POST /api/runs/from-repo with trigger=issue)\n"
-    )
-    for iid in pending[:50]:
-        summary += f"  pending {iid[:7]} (no agent — waiting for issue event)\n"
-    if len(pending) > 50:
-        summary += f"  … and {len(pending) - 50} more\n"
-
-    run = RunResult(
-        id=str(uuid.uuid4())[:8],
-        pipeline="builtin:poll",
-        status="passed",
-        started_at=time.time(),
-        finished_at=time.time(),
-        env=env,
-        steps=[
-            StepResult(
-                key="poll",
-                label="Poll issues (list only)",
-                status="passed",
-                exit_code=0,
-                output=summary,
-            )
-        ],
-    )
-    return {
-        "total_issues": len(issue_ids),
-        "pending": len(pending),
-        "skipped": [f"{i[:7]} (branch exists)" for i in skipped],
-        "dispatched": [],
-        "run": run,
-        "env": env,
-        "script": "builtin:poll",
-    }
 
 
 def _run_script_async(

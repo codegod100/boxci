@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from boxci.issue_agent import run_issue_agent, run_poll
+from boxci.issue_agent import run_issue_agent
 from boxci.repo import (
     checkout_repo,
     find_pipeline_file,
@@ -84,7 +84,7 @@ def _build_extra_env(
     if repo_name:
         extra_env["BOXCI_REPO_NAME"] = repo_name
 
-    if trigger in ("issue", "poll"):
+    if trigger == "issue":
         extra_env["RADICLE_TRIGGER"] = trigger
     else:
         extra_env.setdefault("RADICLE_TRIGGER", "")
@@ -110,7 +110,7 @@ def trigger_from_repo(
     dry_run: bool = False,
     async_run: bool = False,
 ) -> tuple[Path | str, dict[str, str], RunResult]:
-    """Checkout repo and run merge pipeline or builtin issue/poll handlers."""
+    """Checkout repo and run merge pipeline or builtin issue handler."""
     branch = branch or _default_branch()
 
     if trigger == "issue":
@@ -126,17 +126,6 @@ def trigger_from_repo(
             async_run=async_run,
         )
         return script, env, run
-
-    if trigger == "poll":
-        poll_result = run_poll(
-            boxci_root=boxci_root,
-            repo_url=repo_url,
-            branch=branch,
-            repo_id=repo_id,
-            dry_run=dry_run,
-            async_run=async_run,
-        )
-        return poll_result["script"], poll_result["env"], poll_result["run"]
 
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
@@ -181,16 +170,6 @@ def _git_head(workspace: Path) -> str:
         text=True,
     )
     return proc.stdout.strip() if proc.returncode == 0 else ""
-
-
-def _resolve_repo(body: dict[str, Any], *, header_event: str = "") -> tuple[str, str, str]:
-    parsed = parse_garden_payload(body, header_event=header_event)
-    repo_id = parsed["repo"] or _default_repo_id()
-    repo_url = parsed["repo_url"] or _default_repo_url()
-    if not repo_url and repo_id:
-        repo_url = resolve_repo_url(repo_id) or ""
-    branch = parsed["branch"] or _default_branch()
-    return repo_id, repo_url, branch
 
 
 def handle_garden_webhook(
@@ -266,7 +245,7 @@ def handle_garden_issue_webhook(
 
     Only call this when the issue COB itself is the event subject (webhook
     ``commit`` / ``after`` is the issue id, or an explicit issue endpoint /
-    manual trigger). Do not invoke for unrelated poll/list sweeps.
+    manual trigger).
     """
     parsed = parse_garden_payload(body, header_event=header_event)
     branch = parsed["branch"] or _default_branch()
@@ -309,41 +288,6 @@ def handle_garden_issue_webhook(
     }
 
 
-def handle_poll(
-    body: dict[str, Any],
-    *,
-    boxci_root: Path,
-    header_event: str = "",
-) -> dict[str, Any]:
-    """Scheduled / manual poll → list issue COBs only (never starts cursor-agent)."""
-    repo_id, repo_url, branch = _resolve_repo(body, header_event=header_event)
-    if not repo_url:
-        return {"ignored": True, "reason": "repo_url required (or set BOXCI_DEFAULT_REPO_URL)"}
-
-    dry_run = _dry_run_requested(body)
-    poll_result = run_poll(
-        boxci_root=boxci_root,
-        repo_url=repo_url,
-        branch=branch,
-        repo_id=repo_id or None,
-        dry_run=dry_run,
-        async_run=False,
-    )
-    return {
-        "ignored": False,
-        "pipeline": str(poll_result["script"]),
-        "env": poll_result["env"],
-        "run": poll_result["run"],
-        "poll": {
-            "total_issues": poll_result["total_issues"],
-            "pending": poll_result["pending"],
-            "skipped": poll_result["skipped"],
-            "dispatched": poll_result["dispatched"],
-        },
-        "builtin": True,
-    }
-
-
 def _dry_run_requested(body: dict[str, Any]) -> bool:
     if os.environ.get("RADICLE_AGENT_DRY_RUN", "").strip() in ("1", "true", "yes"):
         return True
@@ -354,4 +298,4 @@ def _dry_run_requested(body: dict[str, Any]) -> bool:
 def _should_run_async(trigger: str) -> bool:
     if os.environ.get("BOXCI_SYNC_RUNS", "").strip() in ("1", "true", "yes"):
         return False
-    return trigger in ("issue", "poll", "merge")
+    return trigger in ("issue", "merge")

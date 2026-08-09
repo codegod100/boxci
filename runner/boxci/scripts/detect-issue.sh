@@ -26,7 +26,7 @@ fi
 
 # Issue opens create a COB root commit that does not contain .buildkite/pipeline.yml,
 # so the Radicle Buildkite adapter skips them. Trigger builds on main instead and
-# pass the issue id explicitly (see scripts/buildkite/trigger-issue-build.sh / poll).
+# pass the issue id explicitly (see scripts/buildkite/trigger-issue-build.sh).
 if [[ -n "${RADICLE_ISSUE_ID:-}" ]]; then
   ISSUE_ID="$RADICLE_ISSUE_ID"
   if ! bk_issue_cob_exists "$ISSUE_ID"; then

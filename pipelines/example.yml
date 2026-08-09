@@ -13,7 +13,6 @@ env:
 steps:
   - label: ":nix: Flake check"
     key: flake-check
-    if: build.env("BOXCI_TRIGGER") != "poll"
     command: |
       set -euo pipefail
       echo "--- :nix: verify flake"
@@ -23,7 +22,6 @@ steps:
   - label: ":test: Example tests"
     key: test
     depends_on: flake-check
-    if: build.env("BOXCI_TRIGGER") != "poll"
     command: |
       set -euo pipefail
       echo "--- running example test suite"
@@ -42,12 +40,3 @@ steps:
       nix build .#boxci -L --print-build-logs
       ./result/bin/boxci run pipelines/quick.yml
       echo "build OK"
-
-  - label: ":mag: Poll (scheduled)"
-    key: poll
-    if: build.env("BOXCI_TRIGGER") == "poll"
-    command: |
-      set -euo pipefail
-      echo "poll step — would dispatch pending jobs"
-      curl -sf http://127.0.0.1:${BOXCI_PORT:-8080}/health | head -c 200
-      echo ""
