@@ -187,6 +187,11 @@ header {
   font-size: .85rem;
   font-weight: 600;
   color: var(--cream);
+  text-decoration: none;
+}
+a.run-id:hover {
+  text-decoration: underline;
+  color: var(--accent, var(--cream));
 }
 .run-pipeline {
   font-size: .82rem;
@@ -459,6 +464,8 @@ header {
       <li><code>GET /api/repos</code> — list known repos</li>
       <li><code>GET /api/runs</code> — list recent runs (<code>?repo=</code> to filter)</li>
       <li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
+      <li><code>GET /runs/&lt;id&gt;</code> — run permalink (dashboard)</li>
+      <li><code>GET /repos/&lt;slug&gt;/runs/&lt;id&gt;</code> — repo-scoped run permalink</li>
       <li><code>POST /api/runs/from-repo</code> — trigger repo pipeline</li>
       <li><code>POST /api/webhooks/garden</code> — Garden merge webhook</li>
     </ul>
@@ -488,13 +495,31 @@ header {
 
   const BOOT = readBootstrap();
 
-  function currentRepoKey() {
-    const m = location.pathname.match(/^\/repos\/(.+?)\/?$/);
-    return m ? decodeURIComponent(m[1]) : '';
+  function parseLocation() {
+    const path = (location.pathname || '/').replace(/\/+$/, '') || '/';
+    let repo = '';
+    let focus = '';
+    let m;
+    if ((m = path.match(/^\/repos\/(.+?)\/runs\/([^/]+)$/))) {
+      repo = decodeURIComponent(m[1]);
+      focus = decodeURIComponent(m[2]);
+    } else if ((m = path.match(/^\/runs\/([^/]+)$/))) {
+      focus = decodeURIComponent(m[1]);
+    } else if ((m = path.match(/^\/repos\/(.+)$/))) {
+      repo = decodeURIComponent(m[1]);
+    }
+    const q = new URLSearchParams(location.search).get('run');
+    if (q) focus = q;
+    if (!repo && BOOT.repo) repo = BOOT.repo;
+    if (!focus && BOOT.focus_run) focus = BOOT.focus_run;
+    return { repo, focus };
   }
 
-  const repoKey = currentRepoKey() || (BOOT.repo || '');
+  const loc = parseLocation();
+  const repoKey = loc.repo || '';
+  const focusRunId = loc.focus || '';
   const isRepoPage = !!repoKey;
+  if (focusRunId) openRuns.add(focusRunId);
 
   function fmtTime(ts) {
     if (!ts) return '—';
@@ -626,13 +651,14 @@ header {
       : '';
 
     const open = openRuns.has(run.id) ? ' open' : '';
+    const permalink = runPermalink(run);
 
     return `<article class="run ${esc(run.status)}${open}" data-run="${esc(run.id)}">
       <div class="run-head">
         <span class="badge ${esc(run.status)}">${esc(run.status)}</span>
         <div class="run-meta">
           <div class="run-title">
-            <span class="run-id">${esc(run.id)}</span>
+            <a class="run-id" href="${esc(permalink)}" title="Permalink">${esc(run.id)}</a>
             <span class="run-pipeline" title="${esc(run.pipeline || '')}">${esc(pipelineName(run.pipeline))}</span>
           </div>
           <div class="run-sub">
@@ -657,9 +683,29 @@ header {
     </article>`;
   }
 
+  function runPermalink(run) {
+    const slug = ((run.env || {}).BOXCI_REPO_SLUG || repoKey || '').trim();
+    if (slug) {
+      return '/repos/' + encodeURIComponent(slug) + '/runs/' + encodeURIComponent(run.id);
+    }
+    return '/runs/' + encodeURIComponent(run.id);
+  }
+
+  function scrollFocusRun() {
+    if (!focusRunId) return;
+    const el = runsEl.querySelector('.run[data-run="' + CSS.escape(focusRunId) + '"]');
+    if (!el) return;
+    el.classList.add('open');
+    openRuns.add(focusRunId);
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
   function bindRunEvents() {
     runsEl.querySelectorAll('.run-head').forEach(el => {
-      el.onclick = () => {
+      el.onclick = (e) => {
+        if (e.target.closest('a.run-id')) return;
         const run = el.closest('.run');
         const id = run.dataset.run;
         if (openRuns.has(id)) openRuns.delete(id); else openRuns.add(id);
@@ -733,6 +779,7 @@ header {
     } else {
       runsEl.innerHTML = sorted.map(renderRun).join('');
       bindRunEvents();
+      scrollFocusRun();
     }
     return sorted;
   }
@@ -809,10 +856,13 @@ header {
     if (isRepoPage) {
       const hit = (BOOT.repos || []).find(x => x.slug === repoKey);
       const label = (hit && hit.name) || repoKey;
-      document.title = 'boxci · ' + label;
+      document.title = focusRunId ? ('boxci · ' + label + ' · ' + focusRunId) : ('boxci · ' + label);
       title.textContent = label;
       crumb.hidden = false;
-      crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><span class="here" title="${esc(repoKey)}">${esc(label)}</span>`;
+      const runCrumb = focusRunId
+        ? `<span class="sep">/</span><span class="here" title="${esc(focusRunId)}"><code>${esc(focusRunId)}</code></span>`
+        : '';
+      crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><a href="/repos/${esc(encodeURIComponent(repoKey))}" title="${esc(repoKey)}">${esc(label)}</a>${runCrumb}`;
       reposEl.hidden = true;
       runsEl.hidden = false;
     } else {

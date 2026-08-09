@@ -96,9 +96,9 @@ def job_log_url(env: dict[str, str]) -> str:
     slug = (env.get("BOXCI_REPO_SLUG") or "").strip()
     run_id = (env.get("BOXCI_RUN_ID") or "").strip()
     if slug and run_id:
-        return f"{base}/repos/{slug}?run={run_id}"
+        return f"{base}/repos/{slug}/runs/{run_id}"
     if run_id:
-        return f"{base}/api/runs/{run_id}"
+        return f"{base}/runs/{run_id}"
     return f"{base}/"
 
 

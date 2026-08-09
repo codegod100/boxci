@@ -14,10 +14,11 @@ from boxci.artifacts import resolve_artifact_path
 from boxci.github_patch import run_github_commit_patch
 from boxci.runs import (
     execute_pipeline,
-    get_run,
+    find_run,
     list_artifact_disk_runs,
     list_known_repos,
     list_runs,
+    run_repo_slug,
     serialize_run,
     store_run,
 )
@@ -110,24 +111,41 @@ def _merged_runs(*, repo: str | None = None, limit: int = 50) -> list:
     )[:limit]
 
 
-def _dashboard_bootstrap(repo_key: str | None = None) -> dict:
+def _dashboard_bootstrap(repo_key: str | None = None, run_id: str | None = None) -> dict:
+    focus = (run_id or "").strip() or None
     repo = (repo_key or "").strip() or None
+
+    focus_run = find_run(focus, boxci_root=ROOT) if focus else None
+    if focus_run is not None and not repo:
+        repo = run_repo_slug(focus_run.env) or None
+
     runs = _merged_runs(repo=repo)
+    if focus_run is not None and all(r.id != focus_run.id for r in runs):
+        runs = [focus_run, *runs][:50]
+
     return {
         "ok": True,
         "service": "boxci",
         "repo": repo,
+        "focus_run": focus_run.id if focus_run is not None else focus,
         "repos": list_known_repos(boxci_root=ROOT),
         "runs": [serialize_run(r, boxci_root=ROOT) for r in runs],
     }
 
 
-def _dashboard(repo_key: str | None = None) -> Response:
+def _dashboard(repo_key: str | None = None, run_id: str | None = None) -> Response:
     html = _DASHBOARD.read_text(encoding="utf-8")
     try:
-        boot = _dashboard_bootstrap(repo_key)
+        boot = _dashboard_bootstrap(repo_key, run_id)
     except Exception as exc:  # noqa: BLE001 — still serve shell if data fails
-        boot = {"ok": False, "error": str(exc), "repo": repo_key, "repos": [], "runs": []}
+        boot = {
+            "ok": False,
+            "error": str(exc),
+            "repo": repo_key,
+            "focus_run": run_id,
+            "repos": [],
+            "runs": [],
+        }
     # Prevent </script> breakout when embedding JSON in HTML.
     payload = json.dumps(boot, separators=(",", ":")).replace("<", "\\u003c")
     if "__BOXCI_BOOTSTRAP__" not in html:
@@ -167,6 +185,16 @@ def static_file(filename: str):
     return send_from_directory(_STATIC, filename)
 
 
+@app.get("/runs/<run_id>")
+def run_page(run_id: str) -> Response:
+    return _dashboard(run_id=run_id)
+
+
+@app.get("/repos/<path:repo_key>/runs/<run_id>")
+def repo_run_page(repo_key: str, run_id: str) -> Response:
+    return _dashboard(repo_key, run_id)
+
+
 @app.get("/repos/<path:repo_key>")
 def repo_page(repo_key: str) -> Response:
     return _dashboard(repo_key)
@@ -198,7 +226,7 @@ def list_runs_api():
 
 @app.get("/api/runs/<run_id>")
 def get_run_api(run_id: str):
-    run = get_run(run_id)
+    run = find_run(run_id, boxci_root=ROOT)
     if not run:
         return jsonify({"error": "not found"}), 404
     return jsonify(serialize_run(run, boxci_root=ROOT))

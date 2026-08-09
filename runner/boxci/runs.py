@@ -34,6 +34,48 @@ def get_run(run_id: str) -> RunResult | None:
         return RUNS.get(run_id)
 
 
+def find_run(run_id: str, *, boxci_root: Path | None = None) -> RunResult | None:
+    """Find a run in memory or as an on-disk artifact stub."""
+    run_id = (run_id or "").strip()
+    if not run_id:
+        return None
+    hit = get_run(run_id)
+    if hit is not None:
+        return hit
+    if boxci_root is None:
+        return None
+    from boxci.artifacts import list_run_artifacts_fast
+
+    arts_root = boxci_root / "artifacts"
+    if not arts_root.is_dir():
+        return None
+    for slug_dir in arts_root.iterdir():
+        if not slug_dir.is_dir() or slug_dir.name.startswith("."):
+            continue
+        run_dir = slug_dir / run_id
+        if not run_dir.is_dir():
+            continue
+        files = [p for p in run_dir.iterdir() if p.is_file() and not p.name.startswith(".")]
+        if not files:
+            continue
+        env = {
+            "BOXCI_REPO_SLUG": slug_dir.name,
+            "BOXCI_RUN_ID": run_id,
+            "BOXCI_TRIGGER": "artifacts",
+        }
+        stub = RunResult(
+            id=run_id,
+            pipeline="(on-disk artifacts)",
+            status="passed",
+            started_at=run_dir.stat().st_mtime,
+            finished_at=run_dir.stat().st_mtime,
+            env=env,
+        )
+        stub.artifacts = list_run_artifacts_fast(boxci_root=boxci_root, env=env)
+        return stub
+    return None
+
+
 def _run_recency(run: RunResult) -> float:
     """Newest-first ordering: running runs by start time, else by finish time."""
     if run.status == "running":

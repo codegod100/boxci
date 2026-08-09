@@ -58,9 +58,9 @@ log_url() {
   slug="${BOXCI_REPO_SLUG:-}"
   run_id="${BOXCI_RUN_ID:-}"
   if [[ -n "$slug" && -n "$run_id" ]]; then
-    printf '%s/repos/%s?run=%s' "$base" "$slug" "$run_id"
+    printf '%s/repos/%s/runs/%s' "$base" "$slug" "$run_id"
   elif [[ -n "$run_id" ]]; then
-    printf '%s/api/runs/%s' "$base" "$run_id"
+    printf '%s/runs/%s' "$base" "$run_id"
   else
     printf '%s/' "$base"
   fi
