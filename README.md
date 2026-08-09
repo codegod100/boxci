@@ -51,6 +51,8 @@ Repos may optionally ship `scripts/buildkite/run-issue-agent.sh` for a custom ag
 | `BOXCI_RUN_ID` | Run identifier |
 | `GIT_SHA` | Commit being built |
 | `GIT_BRANCH` | Branch name |
+| `BOXCI_PUBLIC_URL` | Public base URL for Job COB log links (default `https://boxci.boxd.sh`) |
+| `BOXCI_RADICLE_JOB` | Set to `0` to disable Job COB publishing |
 
 Supported `if` expressions (subset of Buildkite):
 
@@ -164,6 +166,25 @@ If the webhooks adapter pipes to a script instead of a URL, use
 `sleek/scripts/boxci/webhook-to-boxci.sh` (forwards broker or Garden JSON; pass
 `X-Boxci-Secret` when `BOXCI_WEBHOOK_SECRET` is set).
 
+### Job COBs (`radicle-job`)
+
+On **merge** runs, boxci publishes a [Radicle Job COB](https://crates.io/crates/radicle-job)
+(`xyz.radworks.job`) so Desktop / Explorer show CI status for the commit:
+
+1. Reuse or `rad-job new <sha>` for the commit
+2. `rad-job run <sha> <log-url>` → `Started` (log URL points at the boxci dashboard)
+3. On completion → `succeeded` / `failed`
+
+Requires on the boxci VM:
+
+- `rad-job` on `PATH` (shipped via the flake package `.#rad-job` / wrapped into `.#boxci`)
+- `RADICLE_SECRET_KEY` — dedicated CI identity (same as the issue agent)
+- Local Radicle storage for the RID (auto-hydrated from Garden HTTPS when needed)
+- A running `rad node` for announce/sync (started by the publish helper)
+
+Publishing is best-effort: failures are logged and **never** fail the pipeline.
+Disable with `BOXCI_RADICLE_JOB=0`.
+
 ### Issue → cursor-agent → patch (builtin)
 
 boxci ships a built-in Radicle issue workflow. No repo `.boxci` steps required.
@@ -203,8 +224,9 @@ curl -X POST https://boxci.boxd.sh/api/runs/from-repo \
 **VM secrets** (via `boxd env set` or OpenBao → `/etc/profile.d/boxd-env.sh`):
 
 - `CURSOR_API_KEY` — Cursor CLI
-- `RADICLE_SECRET_KEY` — dedicated CI Radicle identity (OpenSSH PEM)
+- `RADICLE_SECRET_KEY` — dedicated CI Radicle identity (OpenSSH PEM; issue agent + Job COBs)
 - `RADICLE_PUBLIC_KEY` / `RAD_PASSPHRASE` — optional
+- `BOXCI_PUBLIC_URL` — optional; Job COB log link base (default `https://boxci.boxd.sh`)
 
 ### Persistent workspace (optional)
 
@@ -273,8 +295,9 @@ an issue COB commit. No extra `.boxci` steps needed.
 |------|---------|
 | `flake.nix` | Nix package + dev shell + apps |
 | `runner/boxci/` | Pipeline runner, repo checkout, HTTP server |
+| `runner/boxci/job.py` | Job COB publish (start/finish via `rad-job`) |
 | `runner/boxci/issue_agent.py` | Builtin issue webhook agent |
-| `runner/boxci/scripts/` | Bundled issue-agent scripts (bootstrap, delegate, …) |
+| `runner/boxci/scripts/` | Bundled scripts (issue agent, Job COB publish, …) |
 | `pipelines/` | Legacy central pipelines (deprecated for repo-local `.boxci`) |
 | `deploy/` | boxd deployment helpers |
 

@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from boxci.job import publish_job_finished, publish_job_started
 from boxci.runner import RunResult, run_pipeline
 
 RUNS: dict[str, RunResult] = {}
 _LOCK = threading.Lock()
+
+
+def _boxci_root_from_env(extra_env: dict[str, str]) -> Path:
+    raw = extra_env.get("BOXCI_ROOT") or os.environ.get("BOXCI_ROOT")
+    if raw:
+        return Path(raw)
+    return Path(__file__).resolve().parents[2]
 
 
 def store_run(run: RunResult) -> RunResult:
@@ -208,15 +218,38 @@ def execute_pipeline(
     async_run: bool = False,
     on_complete: Callable[[RunResult], None] | None = None,
 ) -> RunResult:
-    if not async_run:
-        run = run_pipeline(pipeline, extra_env=extra_env, cwd=cwd)
-        return store_run(run)
-
-    import uuid
-
-    run_id = extra_env.get("BOXCI_RUN_ID") or str(uuid.uuid4())[:8]
     extra_env = dict(extra_env)
+    run_id = extra_env.get("BOXCI_RUN_ID") or str(uuid.uuid4())[:8]
     extra_env["BOXCI_RUN_ID"] = run_id
+    boxci_root = _boxci_root_from_env(extra_env)
+
+    def _finish(result: RunResult, job_uuid: str | None) -> None:
+        try:
+            publish_job_finished(
+                boxci_root=boxci_root,
+                env=extra_env,
+                run=result,
+                job_uuid=job_uuid,
+            )
+        except Exception as exc:  # noqa: BLE001 — never fail the CI run
+            print(f"[radicle-job] finish error: {exc}", flush=True)
+        if on_complete:
+            on_complete(result)
+
+    if not async_run:
+        job_uuid = None
+        try:
+            job_uuid = publish_job_started(
+                boxci_root=boxci_root,
+                env=extra_env,
+                run_id=run_id,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[radicle-job] start error: {exc}", flush=True)
+        run = run_pipeline(pipeline, run_id=run_id, extra_env=extra_env, cwd=cwd)
+        store_run(run)
+        _finish(run, job_uuid)
+        return run
 
     pending = RunResult(
         id=run_id,
@@ -227,14 +260,24 @@ def execute_pipeline(
     )
     store_run(pending)
 
+    job_uuid: str | None = None
+    try:
+        job_uuid = publish_job_started(
+            boxci_root=boxci_root,
+            env=extra_env,
+            run_id=run_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[radicle-job] start error: {exc}", flush=True)
+
     queued_at = pending.started_at
+    started_uuid = job_uuid
 
     def worker() -> None:
         result = run_pipeline(pipeline, run_id=run_id, extra_env=extra_env, cwd=cwd)
         result.started_at = queued_at
         store_run(result)
-        if on_complete:
-            on_complete(result)
+        _finish(result, started_uuid)
 
     threading.Thread(target=worker, daemon=True).start()
     return pending
