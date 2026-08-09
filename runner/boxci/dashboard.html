@@ -219,6 +219,15 @@ a.run-id:hover {
 }
 .tag.trigger { border-color: #3d5a8a; color: var(--accent); }
 .tag.repo { border-color: #4a6a4a; color: var(--cream); font-weight: 500; }
+.tag.patch {
+  border-color: #6a5a3d;
+  color: var(--cream);
+  font-weight: 500;
+  max-width: min(42rem, 70vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .run-times {
   text-align: right;
@@ -622,6 +631,7 @@ a.run-id:hover {
     const branch = env.GIT_BRANCH || '';
     const sha = env.GIT_SHA || env.RADICLE_ISSUE_ID || '';
     const issue = env.RADICLE_ISSUE_ID || '';
+    const patchTitle = (env.PATCH_TITLE || env.RADICLE_ISSUE_TITLE || '').trim();
 
     const stepsHtml = (run.steps || []).map(s => {
       const sk = run.id + ':' + s.key;
@@ -643,7 +653,7 @@ a.run-id:hover {
         ).join('')}</div></div>`
       : '';
 
-    const envKeys = ['BOXCI_TRIGGER', 'BOXCI_REPO_NAME', 'BOXCI_REPO_SLUG', 'BOXCI_REPO_ID', 'RADICLE_RID', 'BOXCI_REPO_URL', 'GIT_BRANCH', 'GIT_SHA', 'RADICLE_ISSUE_ID', 'BOXCI_RUN_ID'];
+    const envKeys = ['BOXCI_TRIGGER', 'BOXCI_REPO_NAME', 'BOXCI_REPO_SLUG', 'BOXCI_REPO_ID', 'RADICLE_RID', 'BOXCI_REPO_URL', 'GIT_BRANCH', 'GIT_SHA', 'RADICLE_ISSUE_ID', 'RADICLE_ISSUE_TITLE', 'PATCH_TITLE', 'BOXCI_RUN_ID'];
     const envHtml = envKeys.filter(k => env[k]).length
       ? `<div class="env-grid">${envKeys.filter(k => env[k]).map(k =>
           `<div class="env-item"><kbd>${esc(k)}</kbd> ${esc(env[k])}</div>`
@@ -664,6 +674,7 @@ a.run-id:hover {
           <div class="run-sub">
             <span><span class="tag trigger">${esc(trigger)}</span></span>
             ${repo ? `<span class="tag repo" title="${esc(repoRid(env))}">${esc(repo)}</span>` : ''}
+            ${patchTitle ? `<span class="tag patch" title="${esc(patchTitle)}">${esc(patchTitle)}</span>` : ''}
             ${branch ? `<span>branch <code>${esc(branch)}</code></span>` : ''}
             ${sha ? `<span>sha <code>${esc(shortSha(sha))}</code></span>` : ''}
             ${issue && issue !== sha ? `<span>issue <code>${esc(shortSha(issue))}</code></span>` : ''}
