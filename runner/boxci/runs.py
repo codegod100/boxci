@@ -205,6 +205,8 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
     with _LOCK:
         runs = list(RUNS.values())
 
+    memory_ids = {run.id for run in runs}
+
     for run in runs:
         env = run.env or {}
         slug = run_repo_slug(env)
@@ -238,6 +240,33 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
                     if dirname == "workspaces":
                         derived = resolve_repo_name(path, path.name)
                     upsert(path.name, name=derived)
+
+        # On-disk artifact runs survive process restart; count them so the index
+        # matches /repos/<slug> build history (which merges memory + disk).
+        arts_root = boxci_root / "artifacts"
+        if arts_root.is_dir():
+            for slug_dir in arts_root.iterdir():
+                if not slug_dir.is_dir() or slug_dir.name.startswith("."):
+                    continue
+                for run_dir in slug_dir.iterdir():
+                    if not run_dir.is_dir() or run_dir.name.startswith("."):
+                        continue
+                    if run_dir.name in memory_ids:
+                        continue
+                    files = [
+                        p
+                        for p in run_dir.iterdir()
+                        if p.is_file() and not p.name.startswith(".")
+                    ]
+                    if not files:
+                        continue
+                    mtime = run_dir.stat().st_mtime
+                    upsert(
+                        slug_dir.name,
+                        last_status="passed",
+                        last_at=mtime,
+                        run_count=1,
+                    )
 
         # Per-slug workspace overrides (e.g. BOXCI_WORKSPACE_<slug>=/home/boxd/sleek).
         for key, val in os.environ.items():
