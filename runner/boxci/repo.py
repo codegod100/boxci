@@ -250,6 +250,64 @@ def _toml_table_string(text: str, table: str, key: str = "name") -> str:
     return ""
 
 
+def _name_from_pyproject(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    name = _toml_table_string(text, "project", "name")
+    if name:
+        return name
+    in_table = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            in_table = line == "[tool.poetry]"
+            continue
+        if not in_table:
+            continue
+        m = re.match(r'^name\s*=\s*"([^"]+)"\s*$', line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _name_from_flake(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    # Prefer buildPythonApplication / mkDerivation pname.
+    m = re.search(r'\bpname\s*=\s*"([^"]+)"', text)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r'description\s*=\s*"([^"—\-]+)', text)
+    if m:
+        # "boxci — minimal…" → boxci
+        return m.group(1).strip().split()[0].strip()
+    return ""
+
+
+def _name_from_readme(path: Path) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        m = re.match(r"^#\s+(.+)$", line)
+        if m:
+            title = m.group(1).strip()
+            # First token if title is "boxci — …" or similar
+            token = re.split(r"[\s—–|:]+", title, maxsplit=1)[0].strip()
+            if token and not _naked_rid(token) and len(token) < 64:
+                return token
+        break
+    return ""
+
+
 def _name_from_manifests(workspace: Path) -> str:
     """Derive a display name from common project manifests in the checkout."""
     cargo = workspace / "Cargo.toml"
@@ -268,36 +326,22 @@ def _name_from_manifests(workspace: Path) -> str:
             text = gleam.read_text(encoding="utf-8", errors="replace")
         except OSError:
             text = ""
-        # gleam.toml is flat (no [package] table).
         for raw in text.splitlines():
             m = re.match(r'^name\s*=\s*"([^"]+)"\s*$', raw.strip())
             if m:
                 return m.group(1).strip()
 
-    pyproject = workspace / "pyproject.toml"
-    if pyproject.is_file():
-        try:
-            text = pyproject.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            text = ""
-        for table in ("project", "tool.poetry"):
-            # tool.poetry needs dotted header match
-            if table == "tool.poetry":
-                in_table = False
-                for raw in text.splitlines():
-                    line = raw.strip()
-                    if line.startswith("["):
-                        in_table = line == "[tool.poetry]"
-                        continue
-                    if not in_table:
-                        continue
-                    m = re.match(r'^name\s*=\s*"([^"]+)"\s*$', line)
-                    if m:
-                        return m.group(1).strip()
-            else:
-                name = _toml_table_string(text, table, "name")
-                if name:
-                    return name
+    for rel in (
+        "pyproject.toml",
+        "runner/pyproject.toml",
+        "python/pyproject.toml",
+        "backend/pyproject.toml",
+    ):
+        path = workspace / rel
+        if path.is_file():
+            name = _name_from_pyproject(path)
+            if name:
+                return name
 
     package_json = workspace / "package.json"
     if package_json.is_file():
@@ -310,8 +354,21 @@ def _name_from_manifests(workspace: Path) -> str:
         if isinstance(data, dict):
             name = data.get("name")
             if isinstance(name, str) and name.strip():
-                # Drop npm scope: @org/pkg → pkg
                 return name.strip().rsplit("/", 1)[-1]
+
+    flake = workspace / "flake.nix"
+    if flake.is_file():
+        name = _name_from_flake(flake)
+        if name:
+            return name
+
+    for readme_name in ("README.md", "README.MD", "Readme.md"):
+        readme = workspace / readme_name
+        if readme.is_file():
+            name = _name_from_readme(readme)
+            if name:
+                return name
+            break
 
     return ""
 
