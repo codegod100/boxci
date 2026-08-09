@@ -1,10 +1,12 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="boot-pending">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>boxci</title>
+<script type="application/json" id="boxci-bootstrap">__BOXCI_BOOTSTRAP__</script>
 <style>
+html.boot-pending body { visibility: hidden; }
 :root {
   --bg: #0c0e12;
   --surface: #141820;
@@ -465,12 +467,26 @@ header {
   let pollTimer = null;
   let lastFetch = null;
 
+  function readBootstrap() {
+    const el = document.getElementById('boxci-bootstrap');
+    if (!el) return {};
+    try {
+      const raw = (el.textContent || '').trim();
+      if (!raw || raw === '__BOXCI_BOOTSTRAP__') return {};
+      return JSON.parse(raw);
+    } catch (_) {
+      return {};
+    }
+  }
+
+  const BOOT = readBootstrap();
+
   function currentRepoKey() {
     const m = location.pathname.match(/^\/repos\/(.+?)\/?$/);
     return m ? decodeURIComponent(m[1]) : '';
   }
 
-  const repoKey = currentRepoKey();
+  const repoKey = currentRepoKey() || (BOOT.repo || '');
   const isRepoPage = !!repoKey;
 
   function fmtTime(ts) {
@@ -694,6 +710,45 @@ header {
     document.getElementById('stat-failed').textContent = runs.filter(x => x.status === 'failed').length;
   }
 
+  function paintRepos(repos) {
+    if (!repos.length) {
+      reposEl.innerHTML = '<div class="empty-state"><p>No repos yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
+    } else {
+      reposEl.innerHTML = repos.map(renderRepo).join('');
+    }
+  }
+
+  function paintRuns(runs) {
+    const sorted = (runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
+    applyStats(sorted);
+    if (!sorted.length) {
+      runsEl.innerHTML = '<div class="empty-state"><p>No runs for this repo</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
+    } else {
+      runsEl.innerHTML = sorted.map(renderRun).join('');
+      bindRunEvents();
+    }
+    return sorted;
+  }
+
+  function paintFromBootstrap() {
+    const runs = BOOT.runs || [];
+    const repos = BOOT.repos || [];
+    lastFetch = new Date();
+    if (isRepoPage) {
+      const sorted = paintRuns(runs);
+      const hasRunning = sorted.some(x => x.status === 'running');
+      document.getElementById('refresh-note').textContent =
+        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+      return hasRunning;
+    }
+    applyStats(runs);
+    paintRepos(repos);
+    const hasRunning = runs.some(x => x.status === 'running');
+    document.getElementById('refresh-note').textContent =
+      'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+    return hasRunning;
+  }
+
   async function loadRepos() {
     try {
       const [reposRes, runsRes] = await Promise.all([
@@ -707,12 +762,7 @@ header {
       lastFetch = new Date();
 
       applyStats(runs);
-
-      if (!repos.length) {
-        reposEl.innerHTML = '<div class="empty-state"><p>No repos yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
-      } else {
-        reposEl.innerHTML = repos.map(renderRepo).join('');
-      }
+      paintRepos(repos);
 
       const hasRunning = runs.some(x => x.status === 'running');
       document.getElementById('refresh-note').textContent =
@@ -727,17 +777,8 @@ header {
     try {
       const r = await fetch('/api/runs?repo=' + encodeURIComponent(repoKey));
       const j = await r.json();
-      const runs = (j.runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
+      const runs = paintRuns(j.runs || []);
       lastFetch = new Date();
-
-      applyStats(runs);
-
-      if (!runs.length) {
-        runsEl.innerHTML = '<div class="empty-state"><p>No runs for this repo</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
-      } else {
-        runsEl.innerHTML = runs.map(renderRun).join('');
-        bindRunEvents();
-      }
 
       const hasRunning = runs.some(x => x.status === 'running');
       document.getElementById('refresh-note').textContent =
@@ -759,22 +800,14 @@ header {
     const crumb = document.getElementById('crumb');
 
     if (isRepoPage) {
-      document.title = 'boxci · ' + repoKey;
-      title.textContent = 'Build history';
+      const hit = (BOOT.repos || []).find(x => x.slug === repoKey);
+      const label = (hit && hit.name) || repoKey;
+      document.title = 'boxci · ' + label;
+      title.textContent = label;
       crumb.hidden = false;
-      crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><span class="here" title="${esc(repoKey)}">${esc(repoKey.length > 24 ? shortSha(repoKey) + '…' : repoKey)}</span>`;
+      crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><span class="here" title="${esc(repoKey)}">${esc(label)}</span>`;
       reposEl.hidden = true;
       runsEl.hidden = false;
-      // Prefer display name from repos API when available
-      fetch('/api/repos').then(r => r.json()).then(j => {
-        const hit = (j.repos || []).find(x => x.slug === repoKey);
-        if (hit) {
-          const label = hit.name || repoKey;
-          title.textContent = label;
-          crumb.querySelector('.here').textContent = label;
-          document.title = 'boxci · ' + label;
-        }
-      }).catch(() => {});
     } else {
       document.title = 'boxci';
       title.textContent = 'Repositories';
@@ -784,14 +817,29 @@ header {
     }
   }
 
+  function applyHealth(ok) {
+    const dot = document.getElementById('health-dot');
+    const text = document.getElementById('health-text');
+    if (ok) {
+      dot.className = 'health-dot ok';
+      text.textContent = 'Service healthy';
+    } else {
+      dot.className = 'health-dot err';
+      text.textContent = 'Unhealthy';
+    }
+  }
+
   document.getElementById('refresh-btn').onclick = () => {
     checkHealth();
     if (isRepoPage) loadRuns(); else loadRepos();
   };
 
   setupPage();
+  const bootRunning = paintFromBootstrap();
+  applyHealth(BOOT.ok !== false);
+  document.documentElement.classList.remove('boot-pending');
   checkHealth();
-  if (isRepoPage) loadRuns(); else loadRepos();
+  schedulePoll(bootRunning);
   setInterval(checkHealth, 60000);
 })();
 </script>

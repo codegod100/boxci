@@ -95,8 +95,48 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
     return jsonify(payload), status
 
 
-def _dashboard() -> Response:
+def _merged_runs(*, repo: str | None = None, limit: int = 50) -> list:
+    memory = list_runs(repo=repo)
+    disk = list_artifact_disk_runs(
+        boxci_root=ROOT,
+        repo=repo,
+        exclude_ids={r.id for r in memory},
+    )
+    return sorted(
+        [*memory, *disk],
+        key=lambda r: r.finished_at or r.started_at,
+        reverse=True,
+    )[:limit]
+
+
+def _dashboard_bootstrap(repo_key: str | None = None) -> dict:
+    repo = (repo_key or "").strip() or None
+    runs = _merged_runs(repo=repo)
+    return {
+        "ok": True,
+        "service": "boxci",
+        "repo": repo,
+        "repos": list_known_repos(boxci_root=ROOT),
+        "runs": [serialize_run(r, boxci_root=ROOT) for r in runs],
+    }
+
+
+def _dashboard(repo_key: str | None = None) -> Response:
     html = _DASHBOARD.read_text(encoding="utf-8")
+    try:
+        boot = _dashboard_bootstrap(repo_key)
+    except Exception as exc:  # noqa: BLE001 — still serve shell if data fails
+        boot = {"ok": False, "error": str(exc), "repo": repo_key, "repos": [], "runs": []}
+    # Prevent </script> breakout when embedding JSON in HTML.
+    payload = json.dumps(boot, separators=(",", ":")).replace("<", "\\u003c")
+    if "__BOXCI_BOOTSTRAP__" not in html:
+        html = html.replace(
+            "</head>",
+            f'<script type="application/json" id="boxci-bootstrap">{payload}</script>\n</head>',
+            1,
+        )
+    else:
+        html = html.replace("__BOXCI_BOOTSTRAP__", payload, 1)
     return Response(html, mimetype="text/html")
 
 
@@ -107,7 +147,7 @@ def index() -> Response:
 
 @app.get("/repos/<path:repo_key>")
 def repo_page(repo_key: str) -> Response:
-    return _dashboard()
+    return _dashboard(repo_key)
 
 
 @app.get("/health")
@@ -130,17 +170,7 @@ def list_repos_api():
 @app.get("/api/runs")
 def list_runs_api():
     repo = str(request.args.get("repo") or "").strip() or None
-    memory = list_runs(repo=repo)
-    disk = list_artifact_disk_runs(
-        boxci_root=ROOT,
-        repo=repo,
-        exclude_ids={r.id for r in memory},
-    )
-    merged = sorted(
-        [*memory, *disk],
-        key=lambda r: r.finished_at or r.started_at,
-        reverse=True,
-    )[:50]
+    merged = _merged_runs(repo=repo)
     return jsonify({"runs": [serialize_run(r, boxci_root=ROOT) for r in merged]})
 
 
