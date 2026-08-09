@@ -228,6 +228,94 @@ def load_repo_pipeline(path: Path) -> dict[str, Any]:
     return data
 
 
+def _toml_table_string(text: str, table: str, key: str = "name") -> str:
+    """Best-effort extract ``key = "…"`` from a named TOML table (no full parser)."""
+    in_table = False
+    exact = f"[{table}]"
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("["):
+            in_table = line == exact
+            continue
+        if not in_table:
+            continue
+        m = re.match(rf'^{re.escape(key)}\s*=\s*"([^"]+)"\s*$', line)
+        if m:
+            return m.group(1).strip()
+        m = re.match(rf"^{re.escape(key)}\s*=\s*'([^']+)'\s*$", line)
+        if m:
+            return m.group(1).strip()
+    return ""
+
+
+def _name_from_manifests(workspace: Path) -> str:
+    """Derive a display name from common project manifests in the checkout."""
+    cargo = workspace / "Cargo.toml"
+    if cargo.is_file():
+        try:
+            text = cargo.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        name = _toml_table_string(text, "package", "name")
+        if name:
+            return name
+
+    gleam = workspace / "gleam.toml"
+    if gleam.is_file():
+        try:
+            text = gleam.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        # gleam.toml is flat (no [package] table).
+        for raw in text.splitlines():
+            m = re.match(r'^name\s*=\s*"([^"]+)"\s*$', raw.strip())
+            if m:
+                return m.group(1).strip()
+
+    pyproject = workspace / "pyproject.toml"
+    if pyproject.is_file():
+        try:
+            text = pyproject.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        for table in ("project", "tool.poetry"):
+            # tool.poetry needs dotted header match
+            if table == "tool.poetry":
+                in_table = False
+                for raw in text.splitlines():
+                    line = raw.strip()
+                    if line.startswith("["):
+                        in_table = line == "[tool.poetry]"
+                        continue
+                    if not in_table:
+                        continue
+                    m = re.match(r'^name\s*=\s*"([^"]+)"\s*$', line)
+                    if m:
+                        return m.group(1).strip()
+            else:
+                name = _toml_table_string(text, table, "name")
+                if name:
+                    return name
+
+    package_json = workspace / "package.json"
+    if package_json.is_file():
+        try:
+            import json
+
+            data = json.loads(package_json.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, TypeError):
+            data = None
+        if isinstance(data, dict):
+            name = data.get("name")
+            if isinstance(name, str) and name.strip():
+                # Drop npm scope: @org/pkg → pkg
+                return name.strip().rsplit("/", 1)[-1]
+
+    return ""
+
+
 def resolve_repo_name(
     workspace: Path,
     slug: str,
@@ -250,6 +338,11 @@ def resolve_repo_name(
                 return name.strip()
         except (OSError, ValueError):
             pass
+
+    if workspace.is_dir():
+        derived = _name_from_manifests(workspace)
+        if derived:
+            return derived
 
     base = workspace.name
     if base and base != slug and not _naked_rid(base):

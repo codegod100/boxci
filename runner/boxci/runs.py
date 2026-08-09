@@ -156,6 +156,15 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
     """Repos discovered from runs plus workspaces/ and artifacts/ on disk."""
     by_slug: dict[str, dict] = {}
 
+    def _placeholder_name(name: str, slug: str) -> bool:
+        if not name:
+            return True
+        if name == slug:
+            return True
+        if name.endswith("…") and slug.startswith(name[:-1]):
+            return True
+        return False
+
     def upsert(
         slug: str,
         *,
@@ -180,7 +189,7 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
                 "run_count": run_count,
             }
             return
-        if name and not cur["name"]:
+        if name and (_placeholder_name(str(cur.get("name") or ""), slug) or not cur["name"]):
             cur["name"] = name
         if rid and not cur["rid"]:
             cur["rid"] = rid
@@ -215,13 +224,49 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
         )
 
     if boxci_root is not None:
+        import os
+
+        from boxci.repo import resolve_repo_name
+
         for dirname in ("workspaces", "artifacts"):
             root = boxci_root / dirname
             if not root.is_dir():
                 continue
             for path in root.iterdir():
                 if path.is_dir() and not path.name.startswith("."):
-                    upsert(path.name)
+                    derived = ""
+                    if dirname == "workspaces":
+                        derived = resolve_repo_name(path, path.name)
+                    upsert(path.name, name=derived)
+
+        # Per-slug workspace overrides (e.g. BOXCI_WORKSPACE_<slug>=/home/boxd/sleek).
+        for key, val in os.environ.items():
+            if not key.startswith("BOXCI_WORKSPACE_") or not val.strip():
+                continue
+            slug = key[len("BOXCI_WORKSPACE_") :]
+            # Env keys may use the raw slug; accept as-is.
+            path = Path(val.strip())
+            if path.is_dir():
+                upsert(slug, name=resolve_repo_name(path, slug))
+
+        # Also re-derive for any known slug whose name is still a placeholder.
+        for slug, cur in list(by_slug.items()):
+            if not _placeholder_name(str(cur.get("name") or ""), slug):
+                continue
+            candidates = [
+                boxci_root / "workspaces" / slug,
+            ]
+            override = os.environ.get(f"BOXCI_WORKSPACE_{slug}") or os.environ.get(
+                f"BOXCI_WORKSPACE_{slug.upper()}"
+            )
+            if override:
+                candidates.insert(0, Path(override))
+            for path in candidates:
+                if path.is_dir():
+                    derived = resolve_repo_name(path, slug)
+                    if derived:
+                        upsert(slug, name=derived)
+                        break
 
     repos = sorted(
         by_slug.values(),
