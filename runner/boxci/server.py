@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-from flask import Flask, jsonify, request, Response, send_file
+from flask import Flask, jsonify, request, Response, send_file, send_from_directory
 
 from boxci.artifacts import resolve_artifact_path
 from boxci.github_patch import run_github_commit_patch
@@ -33,6 +33,7 @@ app = Flask(__name__)
 ROOT = Path(os.environ.get("BOXCI_ROOT", Path(__file__).resolve().parents[2]))
 PIPELINES = ROOT / "pipelines"
 _DASHBOARD = Path(__file__).with_name("dashboard.html")
+_STATIC = Path(__file__).with_name("static")
 
 
 def _check_webhook_secret(raw_body: bytes) -> tuple[bool, tuple[Response, int] | None]:
@@ -143,6 +144,27 @@ def _dashboard(repo_key: str | None = None) -> Response:
 @app.get("/")
 def index() -> Response:
     return _dashboard()
+
+
+@app.get("/favicon.ico")
+def favicon_ico():
+    path = _STATIC / "favicon.ico"
+    if not path.is_file():
+        return jsonify({"error": "not found"}), 404
+    return send_file(path, mimetype="image/x-icon")
+
+
+@app.get("/apple-touch-icon.png")
+def apple_touch_icon():
+    path = _STATIC / "apple-touch-icon.png"
+    if not path.is_file():
+        return jsonify({"error": "not found"}), 404
+    return send_file(path, mimetype="image/png")
+
+
+@app.get("/static/<path:filename>")
+def static_file(filename: str):
+    return send_from_directory(_STATIC, filename)
 
 
 @app.get("/repos/<path:repo_key>")
