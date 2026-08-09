@@ -10,7 +10,14 @@ from pathlib import Path
 
 from flask import Flask, jsonify, request, Response
 
-from boxci.runs import execute_pipeline, get_run, list_runs, serialize_run, store_run
+from boxci.runs import (
+    execute_pipeline,
+    get_run,
+    list_known_repos,
+    list_runs,
+    serialize_run,
+    store_run,
+)
 from boxci.webhooks import (
     handle_garden_issue_webhook,
     handle_garden_webhook,
@@ -84,10 +91,19 @@ def _webhook_response(result: dict, *, accepted: bool = False) -> tuple[Response
     return jsonify(payload), status
 
 
-@app.get("/")
-def index() -> Response:
+def _dashboard() -> Response:
     html = _DASHBOARD.read_text(encoding="utf-8")
     return Response(html, mimetype="text/html")
+
+
+@app.get("/")
+def index() -> Response:
+    return _dashboard()
+
+
+@app.get("/repos/<path:repo_key>")
+def repo_page(repo_key: str) -> Response:
+    return _dashboard()
 
 
 @app.get("/health")
@@ -102,9 +118,15 @@ def list_pipelines():
     return jsonify({"pipelines": files})
 
 
+@app.get("/api/repos")
+def list_repos_api():
+    return jsonify({"repos": list_known_repos(boxci_root=ROOT)})
+
+
 @app.get("/api/runs")
 def list_runs_api():
-    return jsonify({"runs": [serialize_run(r) for r in list_runs()]})
+    repo = str(request.args.get("repo") or "").strip() or None
+    return jsonify({"runs": [serialize_run(r) for r in list_runs(repo=repo)]})
 
 
 @app.get("/api/runs/<run_id>")

@@ -51,7 +51,10 @@ header {
   display: flex;
   align-items: center;
   gap: .65rem;
+  color: inherit;
+  text-decoration: none;
 }
+.logo:hover { text-decoration: none; }
 .logo-mark {
   width: 36px; height: 36px;
   background: linear-gradient(135deg, #2d4a7c 0%, #1a2840 100%);
@@ -299,6 +302,67 @@ header {
 }
 .empty-state p { margin: .35rem 0; }
 
+.crumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .4rem .65rem;
+  margin-bottom: 1.25rem;
+  font-size: .82rem;
+  color: var(--muted);
+}
+.crumb a { color: var(--accent); }
+.crumb .sep { color: var(--border); }
+.crumb .here { color: var(--cream); font-weight: 500; }
+
+.repos { display: flex; flex-direction: column; gap: .55rem; }
+.repo-link {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: .75rem 1rem;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: .85rem 1rem;
+  color: inherit;
+  text-decoration: none;
+  transition: border-color .15s, background .15s;
+}
+.repo-link:hover {
+  border-color: #3a4558;
+  background: rgba(255,255,255,.02);
+  text-decoration: none;
+}
+.repo-link .badge { justify-self: start; }
+.repo-name {
+  font-weight: 600;
+  color: var(--cream);
+  font-size: .95rem;
+}
+.repo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .35rem .75rem;
+  margin-top: .2rem;
+  font-size: .78rem;
+  color: var(--muted);
+}
+.repo-meta code { font-family: var(--mono); font-size: .72rem; }
+.repo-side {
+  text-align: right;
+  font-size: .78rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.repo-side .n {
+  display: block;
+  font-family: var(--mono);
+  font-size: .9rem;
+  color: var(--text);
+  margin-bottom: .1rem;
+}
+
 .env-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
@@ -339,26 +403,30 @@ header {
 @media (max-width: 640px) {
   .run-head { grid-template-columns: 1fr; }
   .run-times { text-align: left; }
+  .repo-link { grid-template-columns: 1fr; }
+  .repo-side { text-align: left; }
 }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
-    <div class="logo">
+    <a href="/" class="logo">
       <div class="logo-mark">bx</div>
       <div>
         <h1>boxci</h1>
         <p>Nix-flake CI for Radicle repos</p>
       </div>
-    </div>
+    </a>
     <div class="health">
       <span class="health-dot" id="health-dot"></span>
       <span id="health-text">checking…</span>
     </div>
   </header>
 
-  <div class="stats" id="stats">
+  <div id="crumb" class="crumb" hidden></div>
+
+  <div class="stats" id="stats" hidden>
     <div class="stat"><div class="n" id="stat-total">—</div><div class="l">Runs</div></div>
     <div class="stat running"><div class="n" id="stat-running">—</div><div class="l">Running</div></div>
     <div class="stat passed"><div class="n" id="stat-passed">—</div><div class="l">Passed</div></div>
@@ -366,18 +434,20 @@ header {
   </div>
 
   <div class="toolbar">
-    <h2>Recent runs</h2>
+    <h2 id="page-title">Repositories</h2>
     <span class="refresh-note" id="refresh-note"></span>
     <button class="btn" type="button" id="refresh-btn">Refresh</button>
   </div>
 
-  <div class="runs" id="runs"></div>
+  <div class="repos" id="repos"></div>
+  <div class="runs" id="runs" hidden></div>
 
   <details class="api-section">
     <summary>API reference</summary>
     <ul>
       <li><code>GET /health</code> — service liveness</li>
-      <li><code>GET /api/runs</code> — list recent runs</li>
+      <li><code>GET /api/repos</code> — list known repos</li>
+      <li><code>GET /api/runs</code> — list recent runs (<code>?repo=</code> to filter)</li>
       <li><code>GET /api/runs/&lt;id&gt;</code> — run detail</li>
       <li><code>POST /api/runs/from-repo</code> — trigger repo pipeline</li>
       <li><code>POST /api/webhooks/garden</code> — Garden merge webhook</li>
@@ -388,10 +458,19 @@ header {
 <script>
 (function () {
   const runsEl = document.getElementById('runs');
+  const reposEl = document.getElementById('repos');
   const openRuns = new Set();
   const openSteps = new Set();
   let pollTimer = null;
   let lastFetch = null;
+
+  function currentRepoKey() {
+    const m = location.pathname.match(/^\/repos\/(.+?)\/?$/);
+    return m ? decodeURIComponent(m[1]) : '';
+  }
+
+  const repoKey = currentRepoKey();
+  const isRepoPage = !!repoKey;
 
   function fmtTime(ts) {
     if (!ts) return '—';
@@ -490,7 +569,7 @@ header {
   function renderRun(run) {
     const env = run.env || {};
     const trigger = env.BOXCI_TRIGGER || 'manual';
-    const repo = repoLabel(env);
+    const repo = isRepoPage ? '' : repoLabel(env);
     const branch = env.GIT_BRANCH || '';
     const sha = env.GIT_SHA || env.RADICLE_ISSUE_ID || '';
     const issue = env.RADICLE_ISSUE_ID || '';
@@ -554,7 +633,7 @@ header {
     </article>`;
   }
 
-  function bindEvents() {
+  function bindRunEvents() {
     runsEl.querySelectorAll('.run-head').forEach(el => {
       el.onclick = () => {
         const run = el.closest('.run');
@@ -579,9 +658,58 @@ header {
     return run.finished_at || run.started_at || 0;
   }
 
+  function shortRid(rid) {
+    if (!rid) return '';
+    const naked = rid.startsWith('rad:') ? rid.slice(4) : rid;
+    return 'rad:' + shortSha(naked);
+  }
+
+  function renderRepo(repo) {
+    const badge = repo.last_status
+      ? `<span class="badge ${esc(repo.last_status)}">${esc(repo.last_status)}</span>`
+      : `<span class="badge" style="background:rgba(110,118,129,.15);color:var(--skip)">no runs</span>`;
+    const href = '/repos/' + encodeURIComponent(repo.slug);
+    const rid = repo.rid ? shortRid(repo.rid) : (repo.slug.length >= 20 ? shortRid('rad:' + repo.slug) : '');
+    return `<a class="repo-link" href="${esc(href)}">
+      ${badge}
+      <div>
+        <div class="repo-name">${esc(repo.name || repo.slug)}</div>
+        <div class="repo-meta">
+          ${rid ? `<span title="${esc(repo.rid || repo.slug)}"><code>${esc(rid)}</code></span>` : ''}
+          ${repo.url ? `<span title="${esc(repo.url)}">clone configured</span>` : ''}
+        </div>
+      </div>
+      <div class="repo-side">
+        <span class="n">${repo.run_count || 0}</span>
+        <span>${repo.last_at ? fmtTime(repo.last_at) : 'never built'}</span>
+      </div>
+    </a>`;
+  }
+
+  async function loadRepos() {
+    try {
+      const r = await fetch('/api/repos');
+      const j = await r.json();
+      const repos = j.repos || [];
+      lastFetch = new Date();
+
+      if (!repos.length) {
+        reposEl.innerHTML = '<div class="empty-state"><p>No repos yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
+      } else {
+        reposEl.innerHTML = repos.map(renderRepo).join('');
+      }
+
+      document.getElementById('refresh-note').textContent =
+        'Updated ' + lastFetch.toLocaleTimeString() + ' · polling every 30s';
+      schedulePoll(false);
+    } catch (e) {
+      reposEl.innerHTML = '<div class="empty-state"><p>Failed to load repos</p><p>' + esc(String(e)) + '</p></div>';
+    }
+  }
+
   async function loadRuns() {
     try {
-      const r = await fetch('/api/runs');
+      const r = await fetch('/api/runs?repo=' + encodeURIComponent(repoKey));
       const j = await r.json();
       const runs = (j.runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
       lastFetch = new Date();
@@ -592,10 +720,10 @@ header {
       document.getElementById('stat-failed').textContent = runs.filter(x => x.status === 'failed').length;
 
       if (!runs.length) {
-        runsEl.innerHTML = '<div class="empty-state"><p>No runs yet</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
+        runsEl.innerHTML = '<div class="empty-state"><p>No runs for this repo</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
       } else {
         runsEl.innerHTML = runs.map(renderRun).join('');
-        bindEvents();
+        bindRunEvents();
       }
 
       const hasRunning = runs.some(x => x.status === 'running');
@@ -610,13 +738,50 @@ header {
 
   function schedulePoll(hasRunning) {
     if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(loadRuns, hasRunning ? 5000 : 30000);
+    pollTimer = setTimeout(isRepoPage ? loadRuns : loadRepos, hasRunning ? 5000 : 30000);
   }
 
-  document.getElementById('refresh-btn').onclick = () => { loadRuns(); checkHealth(); };
+  function setupPage() {
+    const title = document.getElementById('page-title');
+    const crumb = document.getElementById('crumb');
+    const stats = document.getElementById('stats');
 
+    if (isRepoPage) {
+      document.title = 'boxci · ' + repoKey;
+      title.textContent = 'Build history';
+      crumb.hidden = false;
+      crumb.innerHTML = `<a href="/">Repositories</a><span class="sep">/</span><span class="here" title="${esc(repoKey)}">${esc(repoKey.length > 24 ? shortSha(repoKey) + '…' : repoKey)}</span>`;
+      stats.hidden = false;
+      reposEl.hidden = true;
+      runsEl.hidden = false;
+      // Prefer display name from repos API when available
+      fetch('/api/repos').then(r => r.json()).then(j => {
+        const hit = (j.repos || []).find(x => x.slug === repoKey);
+        if (hit) {
+          const label = hit.name || repoKey;
+          title.textContent = label;
+          crumb.querySelector('.here').textContent = label;
+          document.title = 'boxci · ' + label;
+        }
+      }).catch(() => {});
+    } else {
+      document.title = 'boxci';
+      title.textContent = 'Repositories';
+      crumb.hidden = true;
+      stats.hidden = true;
+      reposEl.hidden = false;
+      runsEl.hidden = true;
+    }
+  }
+
+  document.getElementById('refresh-btn').onclick = () => {
+    checkHealth();
+    if (isRepoPage) loadRuns(); else loadRepos();
+  };
+
+  setupPage();
   checkHealth();
-  loadRuns();
+  if (isRepoPage) loadRuns(); else loadRepos();
   setInterval(checkHealth, 60000);
 })();
 </script>
