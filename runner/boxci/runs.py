@@ -104,7 +104,7 @@ def list_artifact_disk_runs(
     exclude_ids: set[str] | None = None,
 ) -> list[RunResult]:
     """Synthesize passed runs from on-disk artifact directories (survives process restart)."""
-    from boxci.artifacts import list_local_artifacts
+    from boxci.artifacts import collect_run_artifacts
 
     arts_root = boxci_root / "artifacts"
     if not arts_root.is_dir():
@@ -121,7 +121,11 @@ def list_artifact_disk_runs(
                 continue
             if run_dir.name in exclude:
                 continue
-            files = [p for p in run_dir.iterdir() if p.is_file()]
+            files = [
+                p
+                for p in run_dir.iterdir()
+                if p.is_file() and not p.name.startswith(".")
+            ]
             if not files:
                 continue
 
@@ -140,7 +144,7 @@ def list_artifact_disk_runs(
             )
             if repo and not run_matches_repo(stub, repo):
                 continue
-            stub.artifacts = list_local_artifacts(boxci_root=boxci_root, env=env)
+            stub.artifacts = collect_run_artifacts(boxci_root=boxci_root, env=env)
             if stub.artifacts:
                 found.append(stub)
 

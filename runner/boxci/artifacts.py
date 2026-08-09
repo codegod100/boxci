@@ -5,10 +5,17 @@ from __future__ import annotations
 import base64
 import json
 import os
+import threading
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
+
+_MANIFEST_NAME = ".boxci-artifacts.json"
+_auth_lock = threading.Lock()
+_auth_cache: tuple[float, "_B2Auth"] | None = None
+_publish_lock = threading.Lock()
 
 
 @dataclass
@@ -95,6 +102,17 @@ def _authorize() -> _B2Auth:
     )
 
 
+def _cached_authorize() -> _B2Auth:
+    global _auth_cache
+    now = time.time()
+    with _auth_lock:
+        if _auth_cache and now - _auth_cache[0] < 3600:
+            return _auth_cache[1]
+        auth = _authorize()
+        _auth_cache = (now, auth)
+        return auth
+
+
 def _download_url(auth: _B2Auth, b2_key: str) -> str:
     prefix = os.environ.get("B2_PUBLIC_URL_PREFIX", "").strip().rstrip("/")
     if prefix:
@@ -173,6 +191,68 @@ def _run_identity(art_dir: Path, env: dict[str, str]) -> tuple[str, str]:
     return slug, run_id
 
 
+def _artifact_files(art_dir: Path) -> list[Path]:
+    return sorted(
+        p
+        for p in art_dir.iterdir()
+        if p.is_file() and p.name != _MANIFEST_NAME and not p.name.startswith(".")
+    )
+
+
+def _manifest_path(art_dir: Path) -> Path:
+    return art_dir / _MANIFEST_NAME
+
+
+def _save_manifest(art_dir: Path, artifacts: list[ArtifactInfo]) -> None:
+    rows = [
+        {"name": a.name, "size": a.size, "b2_key": a.b2_key, "path": a.path}
+        for a in artifacts
+        if a.b2_key
+    ]
+    if not rows:
+        return
+    _manifest_path(art_dir).write_text(json.dumps(rows, indent=2) + "\n", encoding="utf-8")
+
+
+def _infos_from_manifest(art_dir: Path, env: dict[str, str]) -> list[ArtifactInfo] | None:
+    path = _manifest_path(art_dir)
+    if not path.is_file():
+        return None
+    try:
+        rows = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(rows, list) or not rows:
+        return None
+
+    files = {p.name: p for p in _artifact_files(art_dir)}
+    if not files:
+        return None
+
+    # Manifest must cover every current file with a b2_key.
+    by_name = {str(r.get("name") or ""): r for r in rows if isinstance(r, dict)}
+    if set(files) != set(by_name) or any(not (by_name[n].get("b2_key") or "").strip() for n in files):
+        return None
+
+    auth = _cached_authorize()
+    slug, run_id = _run_identity(art_dir, env)
+    out: list[ArtifactInfo] = []
+    for name, file_path in sorted(files.items()):
+        row = by_name[name]
+        b2_key = str(row["b2_key"]).strip()
+        size = int(row.get("size") or file_path.stat().st_size)
+        out.append(
+            ArtifactInfo(
+                name=name,
+                path=str(file_path),
+                b2_key=b2_key,
+                url=_download_url(auth, b2_key),
+                size=size,
+            )
+        )
+    return out
+
+
 def list_local_artifacts(
     *,
     boxci_root: Path,
@@ -183,7 +263,7 @@ def list_local_artifacts(
     if not art_dir:
         return []
 
-    files = sorted(p for p in art_dir.iterdir() if p.is_file())
+    files = _artifact_files(art_dir)
     if not files:
         return []
 
@@ -213,14 +293,14 @@ def upload_run_artifacts(
     if not art_dir:
         return []
 
-    files = sorted(p for p in art_dir.iterdir() if p.is_file())
+    files = _artifact_files(art_dir)
     if not files:
         return []
 
     slug, run_id = _run_identity(art_dir, env)
     prefix = os.environ.get("B2_KEY_PREFIX", "artifacts").strip().strip("/")
 
-    auth = _authorize()
+    auth = _cached_authorize()
     uploaded: list[ArtifactInfo] = []
 
     for path in files:
@@ -236,6 +316,7 @@ def upload_run_artifacts(
             )
         )
 
+    _save_manifest(art_dir, uploaded)
     return uploaded
 
 
@@ -244,7 +325,7 @@ def collect_run_artifacts(
     boxci_root: Path,
     env: dict[str, str],
 ) -> list[ArtifactInfo]:
-    """Prefer B2 URLs when upload succeeds; always fall back to local download URLs."""
+    """Prefer B2 URLs when available; fall back to local download URLs."""
     local = list_local_artifacts(boxci_root=boxci_root, env=env)
     if not local:
         return []
@@ -252,24 +333,51 @@ def collect_run_artifacts(
     if not b2_configured():
         return local
 
-    try:
-        uploaded = upload_run_artifacts(boxci_root=boxci_root, env=env)
-    except Exception:
+    art_dir = artifacts_dir_for_run(boxci_root, env)
+    if art_dir is None:
         return local
+
+    with _publish_lock:
+        try:
+            from_manifest = _infos_from_manifest(art_dir, env)
+            if from_manifest:
+                return from_manifest
+            uploaded = upload_run_artifacts(boxci_root=boxci_root, env=env)
+        except Exception:
+            return local
 
     return uploaded or local
 
 
 def hydrate_run_artifacts(run, *, boxci_root: Path) -> None:
-    """If a run has files on disk but no artifact links, attach local URLs in-place."""
-    if getattr(run, "artifacts", None):
-        return
+    """Attach B2 (or local) artifact links for a run that has files on disk."""
     env = dict(getattr(run, "env", None) or {})
     if not env.get("BOXCI_RUN_ID"):
         env["BOXCI_RUN_ID"] = getattr(run, "id", "") or ""
-    local = list_local_artifacts(boxci_root=boxci_root, env=env)
-    if local:
-        run.artifacts = local
+
+    existing = list(getattr(run, "artifacts", None) or [])
+    if existing and all(getattr(a, "b2_key", "") for a in existing):
+        # Refresh time-limited private download URLs.
+        if b2_configured():
+            try:
+                auth = _cached_authorize()
+                run.artifacts = [
+                    ArtifactInfo(
+                        name=a.name,
+                        path=a.path,
+                        b2_key=a.b2_key,
+                        url=_download_url(auth, a.b2_key),
+                        size=a.size,
+                    )
+                    for a in existing
+                ]
+            except Exception:
+                pass
+        return
+
+    collected = collect_run_artifacts(boxci_root=boxci_root, env=env)
+    if collected:
+        run.artifacts = collected
 
 
 def resolve_artifact_path(
@@ -285,6 +393,8 @@ def resolve_artifact_path(
     if "/" in filename or "\\" in filename or filename in (".", ".."):
         return None
     if any(part in (".", "..") for part in (slug, run_id)):
+        return None
+    if filename == _MANIFEST_NAME or filename.startswith("."):
         return None
 
     root = (boxci_root / "artifacts").resolve()
