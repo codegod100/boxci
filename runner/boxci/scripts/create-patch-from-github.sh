@@ -61,7 +61,15 @@ echo "patch branch:     $PATCH_BRANCH"
 # Identity + rad remote (same path as issue agent; skip cursor install noise where possible).
 export RADICLE_REQUIRE_IDENTITY="${RADICLE_REQUIRE_IDENTITY:-1}"
 # bootstrap.sh always installs cursor-agent; that is fine and idempotent.
+# Run as a subprocess — PATH exports inside it do not persist; re-export below.
 bash "$SCRIPT_DIR/bootstrap.sh"
+bk_export_rad_path
+bk_export_cursor_path
+command -v git-remote-rad >/dev/null 2>&1 \
+  || bk_die "git-remote-rad not on PATH after bootstrap (RAD_HOME=${RAD_HOME:-unset} PATH=$PATH)"
+command -v rad >/dev/null 2>&1 \
+  || bk_die "rad not on PATH after bootstrap (RAD_HOME=${RAD_HOME:-unset} PATH=$PATH)"
+echo "[github-patch] rad=$(command -v rad) git-remote-rad=$(command -v git-remote-rad)"
 
 git fetch origin "$BASE_BRANCH" 2>/dev/null || git fetch origin "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" || true
 git checkout -B "$BASE_BRANCH" "origin/${BASE_BRANCH}" 2>/dev/null \
