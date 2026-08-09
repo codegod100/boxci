@@ -239,6 +239,25 @@ def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
 
         hydrate_run_artifacts(run, boxci_root=boxci_root)
 
+    def _public_env(env: dict[str, str] | None) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for k, v in (env or {}).items():
+            ku = k.upper()
+            if any(
+                s in ku
+                for s in (
+                    "SECRET",
+                    "TOKEN",
+                    "PASSWORD",
+                    "PASSPHRASE",
+                    "PRIVATE_KEY",
+                    "_KEY_ID",
+                )
+            ) or ku.endswith("_KEY") or ku.endswith("_KEY_ID"):
+                continue
+            out[k] = v
+        return out
+
     return {
         "id": run.id,
         "pipeline": run.pipeline,
@@ -246,7 +265,7 @@ def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
         "started_at": run.started_at,
         "finished_at": run.finished_at,
         "duration_s": (run.finished_at or time.time()) - run.started_at,
-        "env": run.env,
+        "env": _public_env(run.env),
         "artifacts": [
             {
                 "name": a.name,

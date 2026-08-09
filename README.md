@@ -228,6 +228,35 @@ curl -X POST https://boxci.boxd.sh/api/runs/from-repo \
 - `RADICLE_PUBLIC_KEY` / `RAD_PASSPHRASE` — optional
 - `BOXCI_PUBLIC_URL` — optional; Job COB log link base (default `https://boxci.boxd.sh`)
 
+### GitHub commit → Radicle patch (builtin)
+
+Cursor cloud agents (or any client) can ask boxci to **cherry-pick a GitHub commit**
+onto a Radicle repo and open a patch — no cursor-agent LLM step.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /api/patches/from-github` | Preferred; clear request shape for agents |
+| `POST /api/runs/from-repo` | Same builtin with `"trigger":"github-commit"` |
+
+```bash
+curl -X POST https://boxci.boxd.sh/api/patches/from-github \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "repo": "rad:z9mjPzpVK472QXaaP1picc5U9xBR",
+    "github_repo_url": "https://github.com/org/repo.git",
+    "github_commit": "abc123def456…",
+    "branch": "main",
+    "title": "optional patch title",
+    "description": "optional body"
+  }'
+```
+
+Returns a run (`202` while async). Poll `GET /api/runs/<id>`; step output includes
+`patch_id=…` when the push succeeds. Use `"dry_run": true` to cherry-pick without
+`git push rad`. If `BOXCI_WEBHOOK_SECRET` is set, send `X-Boxci-Secret`.
+
+Private GitHub repos: set `GITHUB_TOKEN` on the boxci VM (`boxd env set`).
+
 ### Persistent workspace (optional)
 
 By default checkouts live under `$BOXCI_ROOT/workspaces/<slug>/`. Override per repo:
@@ -242,9 +271,10 @@ BOXCI_WORKSPACE_z9mjPzpVK472QXaaP1picc5U9xBR=/home/boxd/sleek
 | Endpoint | Purpose |
 |----------|---------|
 | `GET /health` | Liveness |
+| `POST /api/patches/from-github` | Cherry-pick GitHub commit → Radicle patch |
 | `POST /api/webhooks/garden` | Garden merge webhook → repo `.boxci` merge steps |
 | `POST /api/webhooks/garden/issue` | Garden issue open → **builtin** cursor-agent |
-| `POST /api/runs/from-repo` | Manual trigger with `repo_url`, `sha`, `trigger` |
+| `POST /api/runs/from-repo` | Manual trigger (`merge` / `issue` / `github-commit`) |
 | `POST /api/runs` | Legacy central pipelines in `pipelines/` |
 | `GET /api/runs` | List recent runs |
 

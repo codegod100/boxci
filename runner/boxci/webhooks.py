@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from boxci.issue_agent import run_issue_agent
+from boxci.github_patch import run_github_commit_patch
 from boxci.repo import (
     checkout_repo,
     find_pipeline_file,
@@ -109,8 +110,11 @@ def trigger_from_repo(
     issue_id: str | None = None,
     dry_run: bool = False,
     async_run: bool = False,
+    github_repo_url: str | None = None,
+    patch_title: str | None = None,
+    patch_description: str | None = None,
 ) -> tuple[Path | str, dict[str, str], RunResult]:
-    """Checkout repo and run merge pipeline or builtin issue handler."""
+    """Checkout repo and run merge pipeline, issue agent, or GitHub→patch builtin."""
     branch = branch or _default_branch()
 
     if trigger == "issue":
@@ -122,6 +126,26 @@ def trigger_from_repo(
             branch=branch,
             repo_id=repo_id,
             issue_id=issue_id,
+            dry_run=dry_run,
+            async_run=async_run,
+        )
+        return script, env, run
+
+    if trigger in ("github-commit", "github_commit", "github"):
+        if not sha:
+            raise ValueError("sha / github_commit required for trigger=github-commit")
+        gh_url = (github_repo_url or "").strip()
+        if not gh_url:
+            raise ValueError("github_repo_url required for trigger=github-commit")
+        script, env, run = run_github_commit_patch(
+            boxci_root=boxci_root,
+            repo_url=repo_url,
+            repo_id=repo_id,
+            github_commit=sha,
+            github_repo_url=gh_url,
+            branch=branch,
+            title=patch_title,
+            description=patch_description,
             dry_run=dry_run,
             async_run=async_run,
         )
@@ -298,4 +322,4 @@ def _dry_run_requested(body: dict[str, Any]) -> bool:
 def _should_run_async(trigger: str) -> bool:
     if os.environ.get("BOXCI_SYNC_RUNS", "").strip() in ("1", "true", "yes"):
         return False
-    return trigger in ("issue", "merge")
+    return trigger in ("issue", "merge", "github-commit", "github_commit", "github")

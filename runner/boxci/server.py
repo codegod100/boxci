@@ -11,6 +11,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response, send_file
 
 from boxci.artifacts import resolve_artifact_path
+from boxci.github_patch import run_github_commit_patch
 from boxci.runs import (
     execute_pipeline,
     get_run,
@@ -20,6 +21,7 @@ from boxci.runs import (
     serialize_run,
     store_run,
 )
+from boxci.repo import resolve_repo_url
 from boxci.webhooks import (
     handle_garden_issue_webhook,
     handle_garden_webhook,
@@ -188,10 +190,17 @@ def create_run_from_repo():
         return jsonify({"error": "repo_url required"}), 400
 
     trigger = str(body.get("trigger") or body.get("on") or "merge").strip()
-    sha = str(body.get("sha") or body.get("commit") or body.get("GIT_SHA") or "").strip() or None
+    sha = str(body.get("sha") or body.get("commit") or body.get("GIT_SHA") or body.get("github_commit") or "").strip() or None
     branch = str(body.get("branch") or body.get("GIT_BRANCH") or "main").strip()
     repo_id = str(body.get("repo") or body.get("repo_id") or "").strip() or None
     issue_id = str(body.get("issue_id") or body.get("RADICLE_ISSUE_ID") or "").strip() or None
+    github_repo_url = str(
+        body.get("github_repo_url") or body.get("github_url") or body.get("github") or ""
+    ).strip() or None
+    patch_title = str(body.get("title") or body.get("patch_title") or "").strip() or None
+    patch_description = str(
+        body.get("description") or body.get("patch_description") or body.get("body") or ""
+    ).strip() or None
     dry_run = body.get("dry_run") in (True, 1, "1", "true", "yes")
 
     try:
@@ -204,7 +213,10 @@ def create_run_from_repo():
             repo_id=repo_id,
             issue_id=issue_id,
             dry_run=dry_run,
-            async_run=trigger in ("issue", "merge"),
+            async_run=trigger in ("issue", "merge", "github-commit", "github_commit", "github"),
+            github_repo_url=github_repo_url,
+            patch_title=patch_title,
+            patch_description=patch_description,
         )
     except FileNotFoundError as exc:
         return jsonify({"error": str(exc)}), 404
@@ -215,10 +227,96 @@ def create_run_from_repo():
 
     store_run(run)
     status = 202 if run.status == "running" else 201
-    return jsonify({
+    payload = {
         "pipeline": str(pipeline_path),
         "env": env,
         **serialize_run(run),
+    }
+    if trigger in ("github-commit", "github_commit", "github", "issue"):
+        payload["builtin"] = True
+    return jsonify(payload), status
+
+
+@app.post("/api/patches/from-github")
+def create_patch_from_github():
+    """Cherry-pick a GitHub commit onto a Radicle repo and open a patch.
+
+    Preferred endpoint for Cursor cloud agents. Same builtin as
+    ``POST /api/runs/from-repo`` with ``trigger: "github-commit"``.
+    """
+    body = request.get_json(silent=True) or {}
+
+    # Optional shared secret (same as Garden webhooks) when BOXCI_WEBHOOK_SECRET is set.
+    secret = os.environ.get("BOXCI_WEBHOOK_SECRET", "").strip()
+    if secret:
+        provided = request.headers.get("X-Boxci-Secret", "").strip()
+        if provided != secret:
+            return jsonify({"error": "invalid webhook secret"}), 401
+
+    repo_id = str(body.get("repo") or body.get("repo_id") or body.get("rid") or "").strip() or None
+    repo_url = str(body.get("repo_url") or body.get("url") or "").strip() or None
+    if not repo_url and repo_id:
+        repo_url = resolve_repo_url(repo_id)
+    if not repo_url and not repo_id:
+        return jsonify({"error": "repo_url or repo (rad:…) required"}), 400
+
+    github_commit = str(
+        body.get("github_commit")
+        or body.get("sha")
+        or body.get("commit")
+        or body.get("GIT_SHA")
+        or ""
+    ).strip()
+    github_repo_url = str(
+        body.get("github_repo_url") or body.get("github_url") or body.get("github") or ""
+    ).strip()
+    if not github_commit:
+        return jsonify({"error": "github_commit required"}), 400
+    if not github_repo_url:
+        return jsonify({"error": "github_repo_url required"}), 400
+
+    branch = str(body.get("branch") or body.get("GIT_BRANCH") or "main").strip()
+    title = str(body.get("title") or body.get("patch_title") or "").strip() or None
+    description = str(
+        body.get("description") or body.get("patch_description") or body.get("body") or ""
+    ).strip() or None
+    dry_run = body.get("dry_run") in (True, 1, "1", "true", "yes")
+    sync = body.get("async") in (False, 0, "0", "false", "no") or body.get("sync") in (
+        True,
+        1,
+        "1",
+        "true",
+        "yes",
+    )
+
+    try:
+        script, env, run = run_github_commit_patch(
+            boxci_root=ROOT,
+            repo_url=repo_url,
+            repo_id=repo_id,
+            github_commit=github_commit,
+            github_repo_url=github_repo_url,
+            branch=branch,
+            title=title,
+            description=description,
+            dry_run=dry_run,
+            async_run=not sync,
+        )
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    store_run(run)
+    status = 202 if run.status == "running" else 201
+    return jsonify({
+        "pipeline": str(script),
+        "env": {k: v for k, v in env.items() if k != "GITHUB_TOKEN"},
+        "builtin": True,
+        "trigger": "github-commit",
+        **serialize_run(run, boxci_root=ROOT),
     }), status
 
 
