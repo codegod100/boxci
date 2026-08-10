@@ -451,6 +451,25 @@ def issue_cob_exists(issue_id: str, *, repo_url: str, repo_root: Path | None = N
     return any(needle in line for line in proc.stdout.splitlines())
 
 
+def _recover_git_workspace(dest: Path) -> None:
+    """Abort interrupted ops and hard-reset so a dirty shared checkout can be reused.
+
+    Failed ``from-github`` cherry-picks (esp. merge commits) can leave
+    ``CHERRY_PICK_HEAD`` and a dirty index; a plain ``git checkout main`` then
+    fails and surfaces as HTTP 500 on the next request.
+    """
+    git = ["git", "-C", str(dest)]
+    for args in (
+        ["cherry-pick", "--abort"],
+        ["rebase", "--abort"],
+        ["merge", "--abort"],
+        ["am", "--abort"],
+    ):
+        subprocess.run(git + args, capture_output=True, text=True)
+    subprocess.run(git + ["reset", "--hard"], check=False, capture_output=True, text=True)
+    subprocess.run(git + ["clean", "-fd"], check=False, capture_output=True, text=True)
+
+
 def checkout_repo(
     url: str,
     dest: Path,
@@ -470,6 +489,7 @@ def checkout_repo(
             text=True,
         )
     else:
+        _recover_git_workspace(dest)
         subprocess.run(
             ["git", "-C", str(dest), "fetch", "origin", branch, "--depth", "50"],
             check=True,
@@ -479,14 +499,14 @@ def checkout_repo(
 
     if sha:
         subprocess.run(
-            ["git", "-C", str(dest), "checkout", sha],
+            ["git", "-C", str(dest), "checkout", "-f", sha],
             check=True,
             capture_output=True,
             text=True,
         )
     else:
         subprocess.run(
-            ["git", "-C", str(dest), "checkout", branch],
+            ["git", "-C", str(dest), "checkout", "-f", branch],
             check=True,
             capture_output=True,
             text=True,

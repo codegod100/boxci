@@ -71,10 +71,19 @@ command -v rad >/dev/null 2>&1 \
   || bk_die "rad not on PATH after bootstrap (RAD_HOME=${RAD_HOME:-unset} PATH=$PATH)"
 echo "[github-patch] rad=$(command -v rad) git-remote-rad=$(command -v git-remote-rad)"
 
+# Clear any leftover cherry-pick/rebase from a previous failed run in this
+# shared workspace before touching branches.
+git cherry-pick --abort 2>/dev/null || true
+git rebase --abort 2>/dev/null || true
+git merge --abort 2>/dev/null || true
+git am --abort 2>/dev/null || true
+git reset --hard HEAD 2>/dev/null || true
+git clean -fd 2>/dev/null || true
+
 git fetch origin "$BASE_BRANCH" 2>/dev/null || git fetch origin "refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" || true
-git checkout -B "$BASE_BRANCH" "origin/${BASE_BRANCH}" 2>/dev/null \
-  || git checkout -B "$BASE_BRANCH" "$BASE_BRANCH" 2>/dev/null \
-  || git checkout "$BASE_BRANCH"
+git checkout -f -B "$BASE_BRANCH" "origin/${BASE_BRANCH}" 2>/dev/null \
+  || git checkout -f -B "$BASE_BRANCH" "$BASE_BRANCH" 2>/dev/null \
+  || git checkout -f "$BASE_BRANCH"
 git reset --hard "origin/${BASE_BRANCH}" 2>/dev/null || git reset --hard "HEAD"
 
 # Fetch the GitHub commit into FETCH_HEAD (depth-friendly).
@@ -100,19 +109,31 @@ fi
 
 git checkout -B "$PATCH_BRANCH"
 
+_abort_cherry_pick() {
+  git cherry-pick --abort 2>/dev/null || true
+}
+
 echo "=== cherry-pick $FETCHED ==="
 set +e
 git cherry-pick --allow-empty -x "$FETCHED"
 pick_rc=$?
 set -e
 if [[ "$pick_rc" -ne 0 ]]; then
-  # Merge commits need -m 1
+  # Merge commits need -m 1; always abort on failure so the shared workspace
+  # is not left mid-cherry-pick (that breaks the next checkout_repo).
   if git rev-parse -q --verify "${FETCHED}^2" >/dev/null 2>&1; then
     echo "[github-patch] merge commit detected; retrying cherry-pick -m 1"
-    git cherry-pick --abort 2>/dev/null || true
+    _abort_cherry_pick
+    set +e
     git cherry-pick --allow-empty -x -m 1 "$FETCHED"
+    pick_rc=$?
+    set -e
+    if [[ "$pick_rc" -ne 0 ]]; then
+      _abort_cherry_pick
+      bk_die "cherry-pick -m 1 failed for merge commit $FETCHED (use a non-merge commit SHA)"
+    fi
   else
-    git cherry-pick --abort 2>/dev/null || true
+    _abort_cherry_pick
     bk_die "cherry-pick failed for $FETCHED (conflicts or missing parents)"
   fi
 fi
