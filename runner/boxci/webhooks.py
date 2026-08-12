@@ -8,6 +8,7 @@ from typing import Any
 
 from boxci.issue_agent import run_issue_agent
 from boxci.github_patch import run_github_commit_patch
+from boxci.merge_patch import run_patch_merge
 from boxci.repo import (
     checkout_repo,
     find_pipeline_file,
@@ -151,6 +152,22 @@ def trigger_from_repo(
         )
         return script, env, run
 
+    if trigger in ("patch-merge", "patch_merge"):
+        patch_id = str(patch_title or "").strip()
+        if not patch_id:
+            raise ValueError("patch_id (as patch_title) required for trigger=patch-merge")
+        script, env, run = run_patch_merge(
+            boxci_root=boxci_root,
+            repo_url=repo_url,
+            repo_id=repo_id,
+            patch_id=patch_id,
+            branch=branch,
+            merge_message=patch_description,
+            dry_run=dry_run,
+            async_run=async_run,
+        )
+        return script, env, run
+
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
 
@@ -211,7 +228,7 @@ def handle_garden_webhook(
     repo_url = parsed["repo_url"] or _default_repo_url()
 
     if event_kind == "patch":
-        return {"ignored": True, "reason": "patch event (no CI trigger)", "event": event_kind}
+        return handle_garden_patch_webhook(body, boxci_root=boxci_root, parsed=parsed)
     if event_kind == "branch_deleted":
         return {
             "ignored": True,
@@ -312,6 +329,65 @@ def handle_garden_issue_webhook(
     }
 
 
+def handle_garden_patch_webhook(
+    body: dict[str, Any],
+    *,
+    boxci_root: Path,
+    parsed: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Garden patch_created/patch_updated webhook → optional auto-merge.
+
+    By default, patch events are ignored (CI runs on push to main).
+    When ``BOXCI_AUTO_MERGE_PATCHES=1`` is set, boxci will merge the patch
+    via ``rad patch merge`` when CI status is green.
+
+    The patch OID is extracted from the webhook body's ``patch`` field.
+    """
+    if os.environ.get("BOXCI_AUTO_MERGE_PATCHES", "").strip() not in ("1", "true", "yes"):
+        return {"ignored": True, "reason": "patch event (no auto-merge; set BOXCI_AUTO_MERGE_PATCHES=1)", "event": "patch"}
+
+    parsed = parsed or {}
+    repo_id = parsed.get("repo") or _default_repo_id()
+    repo_url = parsed.get("repo_url") or _default_repo_url()
+
+    # Extract patch ID from the webhook payload.
+    patch_obj = body.get("patch")
+    patch_id = ""
+    if isinstance(patch_obj, dict):
+        patch_id = str(patch_obj.get("id") or patch_obj.get("oid") or "").strip()
+    elif isinstance(patch_obj, str):
+        patch_id = patch_obj.strip()
+    if not patch_id:
+        patch_id = str(body.get("patch_id") or body.get("patch_oid") or "").strip()
+    if not patch_id:
+        return {"ignored": True, "reason": "patch event without patch id"}
+
+    if not repo_url and repo_id:
+        repo_url = resolve_repo_url(repo_id) or ""
+    if not repo_url:
+        return {"ignored": True, "reason": "could not resolve repo clone URL"}
+
+    branch = parsed.get("branch") or _default_branch()
+    dry_run = _dry_run_requested(body)
+
+    script, env, run = run_patch_merge(
+        boxci_root=boxci_root,
+        repo_url=repo_url,
+        repo_id=repo_id or None,
+        patch_id=patch_id,
+        branch=branch,
+        dry_run=dry_run,
+        async_run=_should_run_async("patch-merge"),
+    )
+    return {
+        "ignored": False,
+        "pipeline": str(script),
+        "env": env,
+        "run": run,
+        "builtin": True,
+    }
+
+
 def _dry_run_requested(body: dict[str, Any]) -> bool:
     if os.environ.get("RADICLE_AGENT_DRY_RUN", "").strip() in ("1", "true", "yes"):
         return True
@@ -322,4 +398,4 @@ def _dry_run_requested(body: dict[str, Any]) -> bool:
 def _should_run_async(trigger: str) -> bool:
     if os.environ.get("BOXCI_SYNC_RUNS", "").strip() in ("1", "true", "yes"):
         return False
-    return trigger in ("issue", "merge", "github-commit", "github_commit", "github")
+    return trigger in ("issue", "merge", "github-commit", "github_commit", "github", "patch-merge", "patch_merge")

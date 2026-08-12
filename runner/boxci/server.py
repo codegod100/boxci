@@ -12,6 +12,7 @@ from flask import Flask, jsonify, request, Response, send_file, send_from_direct
 
 from boxci.artifacts import resolve_artifact_path
 from boxci.github_patch import run_github_commit_patch
+from boxci.merge_patch import run_patch_merge
 from boxci.runs import (
     execute_pipeline,
     find_run,
@@ -404,6 +405,81 @@ def create_patch_from_github():
         "env": {k: v for k, v in env.items() if k != "GITHUB_TOKEN"},
         "builtin": True,
         "trigger": "github-commit",
+        **serialize_run(run, boxci_root=ROOT),
+    }), status
+
+
+@app.post("/api/patches/merge")
+def merge_patch():
+    """Merge a Radicle patch into main via ``rad patch merge``.
+
+    Accepts:
+      - repo / repo_id / rid — Radicle repo identifier (rad:…)
+      - repo_url / url — HTTPS clone URL (optional; derived from repo id)
+      - patch_id — the patch OID to merge (full or abbreviated hex)
+      - branch — target branch (default: main)
+      - message — optional merge commit annotation
+      - dry_run — if true, stop before the merge
+      - async — if false, run synchronously (default: async)
+
+    Returns the run result (same shape as other builtin endpoints).
+    """
+    body = request.get_json(silent=True) or {}
+
+    # Optional shared secret (same as Garden webhooks) when BOXCI_WEBHOOK_SECRET is set.
+    secret = os.environ.get("BOXCI_WEBHOOK_SECRET", "").strip()
+    if secret:
+        provided = request.headers.get("X-Boxci-Secret", "").strip()
+        if provided != secret:
+            return jsonify({"error": "invalid webhook secret"}), 401
+
+    repo_id = str(body.get("repo") or body.get("repo_id") or body.get("rid") or "").strip() or None
+    repo_url = str(body.get("repo_url") or body.get("url") or "").strip() or None
+    if not repo_url and repo_id:
+        repo_url = resolve_repo_url(repo_id)
+    if not repo_url and not repo_id:
+        return jsonify({"error": "repo_url or repo (rad:…) required"}), 400
+
+    patch_id = str(body.get("patch_id") or body.get("patch") or "").strip()
+    if not patch_id:
+        return jsonify({"error": "patch_id required"}), 400
+
+    branch = str(body.get("branch") or body.get("GIT_BRANCH") or "main").strip()
+    merge_message = str(body.get("message") or body.get("merge_message") or "").strip() or None
+    dry_run = body.get("dry_run") in (True, 1, "1", "true", "yes")
+    sync = body.get("async") in (False, 0, "0", "false", "no") or body.get("sync") in (
+        True,
+        1,
+        "1",
+        "true",
+        "yes",
+    )
+
+    try:
+        script, env, run = run_patch_merge(
+            boxci_root=ROOT,
+            repo_url=repo_url,
+            repo_id=repo_id,
+            patch_id=patch_id,
+            branch=branch,
+            merge_message=merge_message,
+            dry_run=dry_run,
+            async_run=not sync,
+        )
+    except FileNotFoundError as exc:
+        return jsonify({"error": str(exc)}), 404
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({"error": str(exc)}), 500
+
+    store_run(run)
+    status = 202 if run.status == "running" else 201
+    return jsonify({
+        "pipeline": str(script),
+        "env": {k: v for k, v in env.items() if not k.upper().endswith("_KEY") and "SECRET" not in k.upper()},
+        "builtin": True,
+        "trigger": "patch-merge",
         **serialize_run(run, boxci_root=ROOT),
     }), status
 

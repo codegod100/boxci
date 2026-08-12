@@ -34,8 +34,40 @@ steps:
 |---------|--------|---------|
 | `merge` | `BOXCI_TRIGGER=merge` | Repo `.boxci/pipeline.yml` (`on: merge`) |
 | `issue` | Garden issue webhook (issue COB is the event commit) | **Builtin** — cursor-agent → Radicle patch |
+| `patch-merge` | `POST /api/patches/merge` or Garden patch webhook (with `BOXCI_AUTO_MERGE_PATCHES=1`) | **Builtin** — `rad patch merge` into main |
 
 Merge builds use your repo's `.boxci` steps. Issue handling is **built into boxci** — repos do not need `on: issue` or agent steps in `.boxci`.
+
+## Merge a Radicle patch
+
+boxci can merge an open Radicle patch into `main` via the built-in `rad patch merge` builtin.
+
+### `POST /api/patches/merge`
+
+```json
+{
+  "repo": "rad:z3rPPLQFmyRGxVfGn9qGAmCh9wxki",
+  "patch_id": "abc123def456...",
+  "branch": "main",
+  "message": "Optional merge commit annotation"
+}
+```
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `repo` / `repo_id` / `rid` | Yes* | Radicle repo identifier (`rad:…`) |
+| `repo_url` / `url` | Yes* | HTTPS clone URL (or derived from repo id) |
+| `patch_id` / `patch` | Yes | Patch OID to merge (full or abbreviated hex) |
+| `branch` | No | Target branch (default: `main`) |
+| `message` | No | Merge commit annotation |
+| `dry_run` | No | If true, stop before the merge |
+| `async` | No | If false, run synchronously (default: async) |
+
+*\*One of `repo` or `repo_url` is required.*
+
+### Auto-merge on patch webhook
+
+Set `BOXCI_AUTO_MERGE_PATCHES=1` to automatically merge patches when a Garden `patch_created` / `patch_updated` webhook arrives. By default, patch events are ignored.
 
 Repos may optionally ship `scripts/buildkite/run-issue-agent.sh` for a custom agent prompt; otherwise boxci runs its bundled script from `runner/boxci/scripts/`.
 
