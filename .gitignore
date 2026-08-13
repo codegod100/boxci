@@ -10,3 +10,4 @@ __pycache__/
 uv.lock
 workspaces/
 state/
+deploy/worker/node_modules/
