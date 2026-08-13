@@ -21,4 +21,4 @@ where = ["."]
 include = ["boxci*"]
 
 [tool.setuptools.package-data]
-boxci = ["scripts/*.sh", "dashboard.html"]
+boxci = ["scripts/*.sh", "dashboard.html", "static/*"]
