@@ -85,8 +85,9 @@
         };
         boxciEntrypoint = pkgs.writeShellScriptBin "boxci-entrypoint" ''
           set -euo pipefail
-          mkdir -p /var/lib/boxci /tmp
+          mkdir -p /var/lib/boxci /tmp /usr/bin
           rm -rf /homeless-shelter
+          ln -sfn /bin/env /usr/bin/env
           export HOME="''${HOME:-/var/lib/boxci}"
           export BOXCI_ROOT="''${BOXCI_ROOT:-/var/lib/boxci}"
           export BOXCI_PORT="''${BOXCI_PORT:-8080}"

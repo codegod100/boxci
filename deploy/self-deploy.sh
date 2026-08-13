@@ -19,6 +19,11 @@ export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$HOME/.npm}"
 export NIX_CONFIG="${NIX_CONFIG:+${NIX_CONFIG}
 }sandbox = false"
 mkdir -p "$HOME" "$NPM_CONFIG_CACHE" "$STAGE"
+# npm/npx shebangs are #!/usr/bin/env node; dockerTools only has /bin/env.
+mkdir -p /usr/bin
+if [[ ! -e /usr/bin/env ]]; then
+  ln -sf "$(command -v env 2>/dev/null || echo /bin/env)" /usr/bin/env
+fi
 
 have_tools() {
   command -v skopeo >/dev/null \
