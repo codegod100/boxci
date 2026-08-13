@@ -15,16 +15,30 @@ ARCHIVE="${TMPDIR:-/tmp}/boxci-image.tar"
 HOME="${HOME:-/var/lib/boxci}"
 export HOME
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$HOME/.npm}"
+export NIX_CONFIG="${NIX_CONFIG:+${NIX_CONFIG}
+}sandbox = false"
 mkdir -p "$HOME" "$NPM_CONFIG_CACHE" "$(dirname "$OUT_LINK")"
+
+have_tools() {
+  command -v skopeo >/dev/null \
+    && command -v node >/dev/null \
+    && command -v jq >/dev/null \
+    && command -v gzip >/dev/null \
+    && command -v npx >/dev/null
+}
+
+# Deploy tools stay out of the runtime image so Cloudflare can unpack it.
+if [[ "${BOXCI_SELF_DEPLOY_TOOLS:-}" != 1 ]] && ! have_tools; then
+  export BOXCI_SELF_DEPLOY_TOOLS=1
+  exec nix shell --inputs-from "$ROOT" \
+    nixpkgs#skopeo nixpkgs#nodejs_22 nixpkgs#jq nixpkgs#gzip nixpkgs#gnused \
+    -c bash "$0" "$@"
+fi
 
 cd "$ROOT"
 
 echo "--- :nix: nix build .#dockerImage ($SHA)"
-nix_build() {
-  nix build .#dockerImage -L --out-link "$OUT_LINK"
-}
-
-if ! nix_build; then
+if ! nix build .#dockerImage -L --out-link "$OUT_LINK"; then
   echo "--- retrying with writable store /var/lib/boxci/nix"
   mkdir -p /var/lib/boxci/nix
   nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
@@ -58,7 +72,7 @@ HOST="$(echo "$CREDS_JSON" | jq -r '.registry_host // "registry.cloudflare.com"'
 
 REF="${HOST}/${ACCOUNT}/${IMAGE_NAME}:${SHA}"
 echo "--- :skopeo: copy docker-archive → docker://${REF}"
-skopeo copy \
+skopeo copy --insecure-policy \
   --dest-creds "${USER}:${PASS}" \
   "docker-archive:${ARCHIVE}" \
   "docker://${REF}"

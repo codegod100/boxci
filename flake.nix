@@ -109,17 +109,6 @@
             pkgs.bash
             pkgs.coreutils
             pkgs.cacert
-            pkgs.curl
-            pkgs.gnugrep
-            pkgs.gnused
-            pkgs.gzip
-            pkgs.jq
-            pkgs.skopeo
-            pkgs.nodejs_22
-            # skopeo refuses to run without a signature policy
-            (pkgs.writeTextDir "etc/containers/policy.json" ''
-              {"default":[{"type":"insecureAcceptAnything"}]}
-            '')
             # so curl/skopeo/nix agree on a well-known bundle path
             (pkgs.runCommand "boxci-ssl-certs" { } ''
               mkdir -p $out/etc/ssl/certs
