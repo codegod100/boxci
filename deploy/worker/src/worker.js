@@ -4,6 +4,7 @@ export class BoxciContainer extends Container {
   // boxci-server listens on 8080
   defaultPort = 8080;
   sleepAfter = "30m";
+  pingEndpoint = "localhost/health";
 }
 
 export default {
