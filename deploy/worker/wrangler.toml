@@ -8,6 +8,7 @@ compatibility_date = "2025-03-01"
 class_name = "BoxciContainer"
 image = "registry.cloudflare.com/2612967e82750619224e7446c4c41b0b/boxci:latest"
 max_instances = 1
+instance_type = "basic"
 
 # Durable Object binding for the container
 [[durable_objects.bindings]]
