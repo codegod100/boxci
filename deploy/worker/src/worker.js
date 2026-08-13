@@ -22,6 +22,10 @@ export class BoxciContainer extends Container {
 
 export default {
   async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname !== "/health") {
+      console.log(`boxci ${request.method} ${url.pathname}`);
+    }
     const container = getContainer(env.BOXCI_CONTAINER, "boxci");
     return container.fetch(request);
   },

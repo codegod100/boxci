@@ -293,7 +293,7 @@ a.run-id:hover {
   line-height: 1.45;
   color: #b8c0cc;
   overflow-x: auto;
-  max-height: 280px;
+  max-height: min(60vh, 560px);
   overflow-y: auto;
   white-space: pre-wrap;
   word-break: break-word;
@@ -486,6 +486,9 @@ a.run-id:hover {
   const reposEl = document.getElementById('repos');
   const openRuns = new Set();
   const openSteps = new Set();
+  const closedRuns = new Set();
+  const closedSteps = new Set();
+  const logScroll = new Map();
   let pollTimer = null;
   let lastFetch = null;
 
@@ -634,15 +637,22 @@ a.run-id:hover {
 
     const stepsHtml = (run.steps || []).map(s => {
       const sk = run.id + ':' + s.key;
-      const open = openSteps.has(sk) ? ' open' : '';
+      const autoOpen = s.status === 'running' || s.status === 'failed';
+      const open = (openSteps.has(sk) || (autoOpen && !closedSteps.has(sk))) ? ' open' : '';
       const log = (s.output_tail || '').trim();
+      const totalLines = s.output_lines || 0;
+      const shownLines = log ? log.split('\n').length : 0;
+      const live = s.status === 'running' ? ' · live' : '';
+      const linesNote = totalLines
+        ? (totalLines > shownLines ? ` · ${shownLines}/${totalLines} lines` : ` · ${totalLines} lines`)
+        : '';
       return `<div class="step${open}" data-step="${esc(sk)}">
         <div class="step-head">
           <span class="step-icon ${esc(s.status)}">${stepIcon(s.status)}</span>
           <span class="step-label">${esc(s.label || s.key)}</span>
-          <span class="step-dur">${s.duration_s != null ? fmtDur(s.duration_s) : ''}${s.exit_code != null ? ' · exit ' + s.exit_code : ''}</span>
+          <span class="step-dur">${s.duration_s != null ? fmtDur(s.duration_s) : ''}${s.exit_code != null ? ' · exit ' + s.exit_code : ''}${linesNote}${live}</span>
         </div>
-        <pre class="step-log${log ? '' : ' empty'}">${log ? esc(log) : '(no output)'}</pre>
+        <pre class="step-log${log ? '' : ' empty'}">${log ? esc(log) : (s.status === 'running' ? '(waiting for output…)' : '(no output)')}</pre>
       </div>`;
     }).join('');
 
@@ -659,7 +669,8 @@ a.run-id:hover {
         ).join('')}</div>`
       : '';
 
-    const open = openRuns.has(run.id) ? ' open' : '';
+    const autoOpenRun = run.status === 'running' || run.id === focusRunId;
+    const open = (openRuns.has(run.id) || (autoOpenRun && !closedRuns.has(run.id))) ? ' open' : '';
     const permalink = runPermalink(run);
 
     return `<article class="run ${esc(run.status)}${open}" data-run="${esc(run.id)}">
@@ -718,8 +729,15 @@ a.run-id:hover {
         if (e.target.closest('a.run-id')) return;
         const run = el.closest('.run');
         const id = run.dataset.run;
-        if (openRuns.has(id)) openRuns.delete(id); else openRuns.add(id);
-        run.classList.toggle('open');
+        if (openRuns.has(id) || (run.classList.contains('open') && !closedRuns.has(id))) {
+          openRuns.delete(id);
+          closedRuns.add(id);
+          run.classList.remove('open');
+        } else {
+          openRuns.add(id);
+          closedRuns.delete(id);
+          run.classList.add('open');
+        }
       };
     });
     runsEl.querySelectorAll('.step-head').forEach(el => {
@@ -727,8 +745,15 @@ a.run-id:hover {
         e.stopPropagation();
         const step = el.closest('.step');
         const sk = step.dataset.step;
-        if (openSteps.has(sk)) openSteps.delete(sk); else openSteps.add(sk);
-        step.classList.toggle('open');
+        if (openSteps.has(sk) || (step.classList.contains('open') && !closedSteps.has(sk))) {
+          openSteps.delete(sk);
+          closedSteps.add(sk);
+          step.classList.remove('open');
+        } else {
+          openSteps.add(sk);
+          closedSteps.delete(sk);
+          step.classList.add('open');
+        }
       };
     });
   }
@@ -781,14 +806,57 @@ a.run-id:hover {
     }
   }
 
+  function snapshotLogScroll() {
+    runsEl.querySelectorAll('.step[data-step]').forEach(el => {
+      const pre = el.querySelector('.step-log');
+      if (!pre) return;
+      const stick = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 32;
+      logScroll.set(el.dataset.step, { top: pre.scrollTop, stick });
+    });
+  }
+
+  function restoreLogScroll() {
+    runsEl.querySelectorAll('.step[data-step]').forEach(el => {
+      const pre = el.querySelector('.step-log');
+      const saved = logScroll.get(el.dataset.step);
+      if (!pre || !saved) return;
+      pre.scrollTop = saved.stick ? pre.scrollHeight : saved.top;
+    });
+  }
+
+  async function hydrateRunLogs(runs) {
+    const want = (runs || []).filter(r =>
+      r.status === 'running' || openRuns.has(r.id) || r.id === focusRunId
+    );
+    await Promise.all(want.map(async (run) => {
+      try {
+        const r = await fetch('/api/runs/' + encodeURIComponent(run.id));
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.steps) run.steps = j.steps;
+        if (j.status) run.status = j.status;
+        if (j.duration_s != null) run.duration_s = j.duration_s;
+        if (j.artifacts) run.artifacts = j.artifacts;
+      } catch (_) { /* keep list payload */ }
+    }));
+    return runs;
+  }
+
+  function pollLabel(hasRunning) {
+    return 'Updated ' + lastFetch.toLocaleTimeString()
+      + (hasRunning ? ' · polling every 2s' : ' · polling every 30s');
+  }
+
   function paintRuns(runs) {
     const sorted = (runs || []).slice().sort((a, b) => runRecency(b) - runRecency(a));
     applyStats(sorted);
+    snapshotLogScroll();
     if (!sorted.length) {
       runsEl.innerHTML = '<div class="empty-state"><p>No runs for this repo</p><p>Trigger a build via webhook or <code>POST /api/runs/from-repo</code></p></div>';
     } else {
       runsEl.innerHTML = sorted.map(renderRun).join('');
       bindRunEvents();
+      restoreLogScroll();
       scrollFocusRun();
     }
     return sorted;
@@ -801,15 +869,13 @@ a.run-id:hover {
     if (isRepoPage) {
       const sorted = paintRuns(runs);
       const hasRunning = sorted.some(x => x.status === 'running');
-      document.getElementById('refresh-note').textContent =
-        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+      document.getElementById('refresh-note').textContent = pollLabel(hasRunning);
       return hasRunning;
     }
     applyStats(runs);
     paintRepos(repos);
     const hasRunning = runs.some(x => x.status === 'running');
-    document.getElementById('refresh-note').textContent =
-      'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+    document.getElementById('refresh-note').textContent = pollLabel(hasRunning);
     return hasRunning;
   }
 
@@ -829,8 +895,7 @@ a.run-id:hover {
       paintRepos(repos);
 
       const hasRunning = runs.some(x => x.status === 'running');
-      document.getElementById('refresh-note').textContent =
-        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+      document.getElementById('refresh-note').textContent = pollLabel(hasRunning);
       schedulePoll(hasRunning);
     } catch (e) {
       reposEl.innerHTML = '<div class="empty-state"><p>Failed to load repos</p><p>' + esc(String(e)) + '</p></div>';
@@ -841,12 +906,11 @@ a.run-id:hover {
     try {
       const r = await fetch('/api/runs?repo=' + encodeURIComponent(repoKey));
       const j = await r.json();
-      const runs = paintRuns(j.runs || []);
+      const runs = paintRuns(await hydrateRunLogs(j.runs || []));
       lastFetch = new Date();
 
       const hasRunning = runs.some(x => x.status === 'running');
-      document.getElementById('refresh-note').textContent =
-        'Updated ' + lastFetch.toLocaleTimeString() + (hasRunning ? ' · polling every 5s' : ' · polling every 30s');
+      document.getElementById('refresh-note').textContent = pollLabel(hasRunning);
 
       schedulePoll(hasRunning);
     } catch (e) {
@@ -856,7 +920,7 @@ a.run-id:hover {
 
   function schedulePoll(hasRunning) {
     if (pollTimer) clearTimeout(pollTimer);
-    pollTimer = setTimeout(isRepoPage ? loadRuns : loadRepos, hasRunning ? 5000 : 30000);
+    pollTimer = setTimeout(isRepoPage ? loadRuns : loadRepos, hasRunning ? 2000 : 30000);
   }
 
   function setupPage() {

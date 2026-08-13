@@ -141,7 +141,17 @@ def _dashboard_bootstrap(repo_key: str | None = None, run_id: str | None = None)
         "repo": repo,
         "focus_run": focus_run.id if focus_run is not None else focus,
         "repos": list_known_repos(boxci_root=ROOT),
-        "runs": [serialize_run(r, boxci_root=ROOT) for r in runs],
+        "runs": [
+            serialize_run(
+                r,
+                boxci_root=ROOT,
+                full_logs=(
+                    r.status == "running"
+                    or (focus_run is not None and r.id == focus_run.id)
+                ),
+            )
+            for r in runs
+        ],
     }
 
 
@@ -241,7 +251,7 @@ def get_run_api(run_id: str):
     run = find_run(run_id, boxci_root=ROOT)
     if not run:
         return jsonify({"error": "not found"}), 404
-    return jsonify(serialize_run(run, boxci_root=ROOT))
+    return jsonify(serialize_run(run, boxci_root=ROOT, full_logs=True))
 
 
 @app.get("/artifacts/<slug>/<run_id>/<path:filename>")

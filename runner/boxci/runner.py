@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,16 +96,42 @@ def _step_ready(step: dict[str, Any], completed: dict[str, StepResult], allow_fa
     return True
 
 
-def _run_command(command: str, env: dict[str, str], cwd: Path | None) -> tuple[int, str]:
-    proc = subprocess.run(
-        ["bash", "-lc", command],
+_MAX_LIVE_OUTPUT_CHARS = 100_000
+_PROGRESS_EVERY_S = 1.0
+
+
+def _run_command(
+    command: str,
+    env: dict[str, str],
+    cwd: Path | None,
+    *,
+    on_chunk: Callable[[str], None] | None = None,
+) -> tuple[int, str]:
+    """Run a step, streaming stdout+stderr so long deploys are visible live."""
+    argv = ["bash", "-lc", command]
+    stdbuf = shutil.which("stdbuf")
+    if stdbuf:
+        argv = [stdbuf, "-oL", "-eL", *argv]
+    proc = subprocess.Popen(
+        argv,
         env=env,
         cwd=cwd,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
     )
-    output = (proc.stdout or "") + (proc.stderr or "")
-    return proc.returncode, output
+    assert proc.stdout is not None
+    parts: list[str] = []
+    while True:
+        data = proc.stdout.read(4096)
+        if not data:
+            break
+        text = data.decode("utf-8", errors="replace").replace("\r", "\n")
+        parts.append(text)
+        if on_chunk:
+            on_chunk(text)
+    code = proc.wait()
+    return code, "".join(parts)
 
 
 def load_pipeline(path: Path) -> dict[str, Any]:
@@ -120,6 +148,7 @@ def run_pipeline(
     run_id: str | None = None,
     extra_env: dict[str, str] | None = None,
     cwd: Path | None = None,
+    on_progress: Callable[[RunResult], None] | None = None,
 ) -> RunResult:
     pipeline = load_pipeline(pipeline_path)
     base_env = os.environ.copy()
@@ -135,6 +164,8 @@ def run_pipeline(
         started_at=time.time(),
         env={k: base_env[k] for k in sorted(base_env) if k.startswith(("BOXCI_", "CI_", "GIT_")) or k in (pipeline.get("env") or {})},
     )
+    if on_progress:
+        on_progress(run)
 
     steps: list[dict[str, Any]] = pipeline["steps"]
     completed: dict[str, StepResult] = {}
@@ -160,6 +191,9 @@ def run_pipeline(
             sr = StepResult(key=key, label=label, status="running")
             run.steps.append(sr)
             completed[key] = sr
+            if on_progress:
+                on_progress(run)
+            print(f"[boxci] run {run.id} step {key} running", flush=True)
 
             command = step.get("command")
             if not command:
@@ -172,12 +206,46 @@ def run_pipeline(
                 continue
 
             step_env = _merge_env(base_env, step.get("env"))
+            step_env.setdefault("PYTHONUNBUFFERED", "1")
             t0 = time.time()
-            code, output = _run_command(command, step_env, cwd)
+            output_parts: list[str] = []
+            last_progress = 0.0
+            line_buf = ""
+
+            def on_chunk(text: str, *, step=sr) -> None:
+                nonlocal last_progress, line_buf
+                output_parts.append(text)
+                joined = "".join(output_parts)
+                if len(joined) > _MAX_LIVE_OUTPUT_CHARS:
+                    joined = joined[-_MAX_LIVE_OUTPUT_CHARS:]
+                    output_parts[:] = [joined]
+                step.output = joined
+                step.duration_s = time.time() - t0
+                line_buf += text
+                while "\n" in line_buf:
+                    line, line_buf = line_buf.split("\n", 1)
+                    print(f"[{run.id}/{step.key}] {line}", flush=True)
+                now = time.time()
+                if on_progress and now - last_progress >= _PROGRESS_EVERY_S:
+                    last_progress = now
+                    on_progress(run)
+
+            code, output = _run_command(command, step_env, cwd, on_chunk=on_chunk)
+            if line_buf:
+                print(f"[{run.id}/{sr.key}] {line_buf}", flush=True)
             sr.duration_s = time.time() - t0
             sr.exit_code = code
-            sr.output = output
+            clipped = (output or sr.output or "")
+            if len(clipped) > _MAX_LIVE_OUTPUT_CHARS:
+                clipped = clipped[-_MAX_LIVE_OUTPUT_CHARS:]
+            sr.output = clipped
             sr.status = "passed" if code == 0 else "failed"
+            print(
+                f"[boxci] run {run.id} step {key} {sr.status} exit={code} in {sr.duration_s:.1f}s",
+                flush=True,
+            )
+            if on_progress:
+                on_progress(run)
 
             if code != 0:
                 run.status = "failed"
@@ -218,6 +286,8 @@ def run_pipeline(
         if run.steps:
             run.steps[-1].output = (run.steps[-1].output or "") + note
 
+    if on_progress:
+        on_progress(run)
     return run
 
 

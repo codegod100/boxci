@@ -591,7 +591,20 @@ def list_known_repos(*, boxci_root: Path | None = None) -> list[dict]:
     return repos
 
 
-def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
+def _output_tail(text: str, *, status: str, full: bool = False) -> str:
+    lines = (text or "").splitlines()
+    if full:
+        return "\n".join(lines)
+    n = 400 if status in ("running", "failed") else 40
+    return "\n".join(lines[-n:])
+
+
+def serialize_run(
+    run: RunResult,
+    *,
+    boxci_root: Path | None = None,
+    full_logs: bool = False,
+) -> dict:
     if boxci_root is not None:
         from boxci.artifacts import hydrate_run_artifacts
 
@@ -621,7 +634,10 @@ def serialize_run(run: RunResult, *, boxci_root: Path | None = None) -> dict:
                 "status": s.status,
                 "exit_code": s.exit_code,
                 "duration_s": s.duration_s,
-                "output_tail": "\n".join((s.output or "").strip().splitlines()[-30:]),
+                "output_lines": len((s.output or "").splitlines()),
+                "output_tail": _output_tail(
+                    s.output or "", status=s.status, full=full_logs
+                ),
             }
             for s in run.steps
         ],
@@ -640,8 +656,20 @@ def execute_pipeline(
     run_id = extra_env.get("BOXCI_RUN_ID") or str(uuid.uuid4())[:8]
     extra_env["BOXCI_RUN_ID"] = run_id
     boxci_root = _boxci_root_from_env(extra_env)
+    print(
+        f"[boxci] run {run_id} start pipeline={pipeline} async={async_run}",
+        flush=True,
+    )
+
+    def _progress(result: RunResult) -> None:
+        store_run(result, boxci_root=boxci_root)
 
     def _finish(result: RunResult, job_uuid: str | None) -> None:
+        dur = (result.finished_at or time.time()) - result.started_at
+        print(
+            f"[boxci] run {result.id} {result.status} in {dur:.1f}s",
+            flush=True,
+        )
         try:
             publish_job_finished(
                 boxci_root=boxci_root,
@@ -664,8 +692,14 @@ def execute_pipeline(
             )
         except Exception as exc:  # noqa: BLE001
             print(f"[radicle-job] start error: {exc}", flush=True)
-        run = run_pipeline(pipeline, run_id=run_id, extra_env=extra_env, cwd=cwd)
-        store_run(run)
+        run = run_pipeline(
+            pipeline,
+            run_id=run_id,
+            extra_env=extra_env,
+            cwd=cwd,
+            on_progress=_progress,
+        )
+        store_run(run, boxci_root=boxci_root)
         _finish(run, job_uuid)
         return run
 
@@ -676,7 +710,7 @@ def execute_pipeline(
         started_at=time.time(),
         env={k: extra_env[k] for k in sorted(extra_env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_"))},
     )
-    store_run(pending)
+    store_run(pending, boxci_root=boxci_root)
 
     job_uuid: str | None = None
     try:
@@ -692,9 +726,15 @@ def execute_pipeline(
     started_uuid = job_uuid
 
     def worker() -> None:
-        result = run_pipeline(pipeline, run_id=run_id, extra_env=extra_env, cwd=cwd)
+        result = run_pipeline(
+            pipeline,
+            run_id=run_id,
+            extra_env=extra_env,
+            cwd=cwd,
+            on_progress=_progress,
+        )
         result.started_at = queued_at
-        store_run(result)
+        store_run(result, boxci_root=boxci_root)
         _finish(result, started_uuid)
 
     threading.Thread(target=worker, daemon=True).start()

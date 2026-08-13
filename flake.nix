@@ -93,6 +93,9 @@
           export BOXCI_PORT="''${BOXCI_PORT:-8080}"
           export BOXCI_PUBLIC_URL="''${BOXCI_PUBLIC_URL:-https://boxci.latha.org}"
           export NPM_CONFIG_CACHE="''${NPM_CONFIG_CACHE:-/var/lib/boxci/.npm}"
+          echo "[boxci-entrypoint] $(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo now) starting boxci-server" >&2
+          echo "[boxci-entrypoint] HOME=$HOME BOXCI_ROOT=$BOXCI_ROOT BOXCI_PORT=$BOXCI_PORT" >&2
+          echo "[boxci-entrypoint] BOXCI_PUBLIC_URL=$BOXCI_PUBLIC_URL" >&2
           exec /bin/boxci-server "$@"
         '';
 
