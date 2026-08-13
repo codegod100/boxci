@@ -13,7 +13,19 @@ export class BoxciContainer extends Container {
 
 export default {
   async fetch(request, env) {
-    const container = getContainer(env.BOXCI_CONTAINER, "boxci");
-    return container.fetch(request);
+    try {
+      const container = getContainer(env.BOXCI_CONTAINER, "boxci");
+      return await container.fetch(request);
+    } catch (err) {
+      return new Response(
+        JSON.stringify({
+          error: String(err),
+          message: err?.message,
+          name: err?.name,
+          stack: err?.stack,
+        }, null, 2),
+        { status: 500, headers: { "content-type": "application/json" } }
+      );
+    }
   },
 };
