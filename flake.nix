@@ -83,6 +83,37 @@
             done
           '';
         };
+        # Docker image bundling boxci + rad-job + runtime tools + Nix.
+        dockerImage = pkgs.dockerTools.buildImage {
+          name = "boxci";
+          tag = "latest";
+          created = "now";
+          copyToRoot = [
+            boxci
+            pkgs.nix
+            # runtime tools that boxci scripts / rad-job need at run time
+            pkgs.git
+            pkgs.openssh
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.cacert
+            # minimal nix config so `nix` works without a running daemon
+            (pkgs.writeTextDir "etc/nix/nix.conf" ''
+              experimental-features = nix-command flakes
+              build-users-group =
+              ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
+            '')
+          ];
+          config = {
+            Entrypoint = [ "boxci" ];
+            Env = [
+              "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              "GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+              "NIX_CONF_DIR=/etc/nix"
+              "NIX_REMOTE=local"
+            ];
+          };
+        };
       in {
         packages = {
           default = boxci;
@@ -90,6 +121,9 @@
           boxci-app = boxciApp;
           boxci = boxci;
           rad-job = rad-job;
+          # OCI/Docker image: `nix build .#dockerImage` → ./result is a tarball
+          dockerImage = dockerImage;
+          docker = dockerImage;
         };
 
         apps = {

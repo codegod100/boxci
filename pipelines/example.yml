@@ -40,3 +40,16 @@ steps:
       nix build .#boxci -L --print-build-logs
       ./result/bin/boxci run pipelines/quick.yml
       echo "build OK"
+
+  - label: ":docker: Build & push Docker image"
+    key: docker
+    depends_on: build
+    command: |
+      set -euo pipefail
+      echo "--- :docker: nix build .#dockerImage"
+      nix build .#dockerImage -L
+      echo "--- loading image into Docker"
+      docker load < result
+      echo "--- pushing to Cloudflare registry"
+      npx wrangler@latest containers push boxci:latest
+      echo "docker image deployed"
