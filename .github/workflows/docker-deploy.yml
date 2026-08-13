@@ -46,9 +46,13 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BOXCI_THINK_SECRET: ${{ secrets.BOXCI_THINK_SECRET }}
         run: |
           # Update wrangler.toml with the SHA-tagged image
           sed -i "s|image = .*|image = \"registry.cloudflare.com/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}\"|" wrangler.toml
           npx wrangler@latest deploy
           # Worker secret is forwarded into the container for self-deploy.
           printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler@latest secret put CLOUDFLARE_API_TOKEN
+          if [ -n "${BOXCI_THINK_SECRET:-}" ]; then
+            printf '%s' "$BOXCI_THINK_SECRET" | npx wrangler@latest secret put BOXCI_THINK_SECRET
+          fi

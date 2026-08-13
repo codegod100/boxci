@@ -1,4 +1,4 @@
-"""Built-in Radicle issue → cursor-agent → patch (webhook/manual only)."""
+"""Built-in Radicle issue → Think sandbox → patch (webhook/manual only)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,12 @@ from boxci.repo import (
 )
 from boxci.runner import RunResult, StepResult
 from boxci.runs import store_run
+from boxci.think_sandbox import (
+    format_think_output,
+    run_think_job,
+    think_enabled,
+    think_job_ok,
+)
 
 _SCRIPTS = Path(__file__).resolve().parent / "scripts"
 _REPO_AGENT = "scripts/buildkite/run-issue-agent.sh"
@@ -73,6 +79,8 @@ def build_issue_env(
         "RADICLE_RID": rid,
         "RADICLE_GARDEN_GIT": repo_url,
         "BOXCI_SCRIPTS": str(_SCRIPTS),
+        "BOXCI_AGENT_BACKEND": "think",
+        "THINK_URL": os.environ.get("THINK_URL", "https://think.latha.org"),
     }
     if issue_id:
         extra["RADICLE_ISSUE_ID"] = issue_id
@@ -127,6 +135,81 @@ def _run_script(
     return run
 
 
+def _issue_prompt(issue_id: str, repo: str, branch: str) -> str:
+    return f"""A new Radicle issue was opened. The repository is already cloned at /workspace in this Think sandbox.
+
+Issue ID: {issue_id}
+Repo: {repo}
+Base branch: {branch}
+
+Use sandbox_exec, sandbox_read, and sandbox_write to inspect and edit files under /workspace.
+
+Requirements:
+1. Read the issue (rad issue show {issue_id} if rad is available, or infer from git/cobs).
+2. Implement a fix in /workspace.
+3. Open a Radicle patch on the rad remote. The patch MUST have a title AND a description body.
+   Prefer: git push rad HEAD:refs/patches with repeated -o patch.message=...
+4. Do not close the issue. Only open the patch.
+
+If the issue is not actionable, explain why and do not open a patch.
+"""
+
+
+def _run_think_issue(
+    extra_env: dict[str, str],
+    *,
+    cwd: Path,
+    run_id: str | None = None,
+    label: str = "issue agent",
+    started_at: float | None = None,
+) -> RunResult:
+    run_id = run_id or str(uuid.uuid4())[:8]
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in extra_env.items() if v is not None})
+    env["BOXCI_RUN_ID"] = run_id
+    run = RunResult(
+        id=run_id,
+        pipeline="builtin:think-sandbox-agent",
+        status="running",
+        started_at=started_at or time.time(),
+        env={k: env[k] for k in sorted(env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_", "BUILDKITE_", "THINK_"))},
+    )
+    step = StepResult(key="issue-agent", label=label, status="running")
+    run.steps.append(step)
+    t0 = time.time()
+    issue_id = extra_env.get("RADICLE_ISSUE_ID") or extra_env.get("GIT_SHA") or ""
+    try:
+        result = run_think_job(
+            {
+                "action": "agent",
+                "run_id": run_id,
+                "repo_url": extra_env["BOXCI_REPO_URL"],
+                "repo": extra_env.get("RADICLE_RID") or extra_env.get("BOXCI_REPO_ID"),
+                "branch": extra_env.get("GIT_BRANCH") or "main",
+                "sha": extra_env.get("GIT_SHA"),
+                "prompt": _issue_prompt(
+                    issue_id,
+                    extra_env.get("RADICLE_RID") or extra_env.get("BOXCI_REPO_ID") or "",
+                    extra_env.get("GIT_BRANCH") or "main",
+                ),
+                "dry_run": extra_env.get("RADICLE_AGENT_DRY_RUN") in ("1", "true", "yes"),
+            },
+            timeout_s=int(os.environ.get("BOXCI_THINK_TIMEOUT", "1800")),
+        )
+        step.output = format_think_output(result)
+        ok = think_job_ok(result)
+        step.exit_code = 0 if ok else 1
+        step.status = "passed" if ok else "failed"
+    except Exception as exc:  # noqa: BLE001
+        step.output = str(exc)
+        step.exit_code = 1
+        step.status = "failed"
+    step.duration_s = time.time() - t0
+    run.status = step.status
+    run.finished_at = time.time()
+    return run
+
+
 def run_issue_agent(
     *,
     boxci_root: Path,
@@ -137,15 +220,15 @@ def run_issue_agent(
     dry_run: bool = False,
     async_run: bool = False,
 ) -> tuple[Path, dict[str, str], RunResult]:
-    """Checkout repo and run issue agent (repo script or boxci builtin)."""
+    """Run issue agent in a Think sandbox (fallback: local cursor script)."""
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
-
-    checkout_repo(repo_url, workspace, branch=branch, sha=None)
-    sha = _git_head(workspace)
-
-    if not issue_cob_exists(issue_id, repo_url=repo_url, repo_root=workspace):
-        raise ValueError(f"commit {issue_id[:7]} is not a xyz.radicle.issue COB")
+    sha = issue_id
+    if not think_enabled():
+        checkout_repo(repo_url, workspace, branch=branch, sha=None)
+        sha = _git_head(workspace)
+        if not issue_cob_exists(issue_id, repo_url=repo_url, repo_root=workspace):
+            raise ValueError(f"commit {issue_id[:7]} is not a xyz.radicle.issue COB")
 
     script = find_issue_agent_script(workspace)
     env = build_issue_env(
@@ -159,18 +242,32 @@ def run_issue_agent(
         issue_id=issue_id,
         dry_run=dry_run,
     )
+    label = f"Issue {issue_id[:7]} → think sandbox" if think_enabled() else f"Issue {issue_id[:7]} → agent"
+
+    if think_enabled():
+        def runner(extra, *, cwd, run_id=None, label=label, started_at=None):
+            return _run_think_issue(
+                extra, cwd=cwd, run_id=run_id, label=label, started_at=started_at
+            )
+        pipeline_script = Path("builtin:think-sandbox-agent")
+    else:
+        def runner(extra, *, cwd, run_id=None, label=label, started_at=None):
+            return _run_script(
+                script, extra, cwd=cwd, run_id=run_id, label=label, started_at=started_at
+            )
+        pipeline_script = script
 
     if async_run:
-        run = _run_script_async(script, env, cwd=workspace, label=f"Issue {issue_id[:7]} → agent")
+        run = _run_issue_async(runner, env, cwd=workspace, label=label)
         store_run(run)
     else:
-        run = _run_script(script, env, cwd=workspace, label=f"Issue {issue_id[:7]} → agent")
+        run = runner(env, cwd=workspace, label=label)
 
-    return script, env, run
+    return pipeline_script, env, run
 
 
-def _run_script_async(
-    script: Path,
+def _run_issue_async(
+    runner,
     env: dict[str, str],
     *,
     cwd: Path,
@@ -182,17 +279,15 @@ def _run_script_async(
     queued_at = time.time()
     pending = RunResult(
         id=run_id,
-        pipeline=f"builtin:{script.name}",
+        pipeline="builtin:think-sandbox-agent" if think_enabled() else "builtin:run-issue-agent.sh",
         status="running",
         started_at=queued_at,
-        env={k: env[k] for k in sorted(env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_", "BUILDKITE_"))},
+        env={k: env[k] for k in sorted(env) if k.startswith(("BOXCI_", "GIT_", "RADICLE_", "BUILDKITE_", "THINK_"))},
     )
     store_run(pending)
 
     def worker() -> None:
-        result = _run_script(
-            script, env, cwd=cwd, run_id=run_id, label=label, started_at=queued_at
-        )
+        result = runner(env, cwd=cwd, run_id=run_id, label=label, started_at=queued_at)
         store_run(result)
 
     threading.Thread(target=worker, daemon=True).start()

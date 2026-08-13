@@ -14,6 +14,9 @@ export class BoxciContainer extends Container {
     HOME: "/var/lib/boxci",
     BOXCI_ROOT: "/var/lib/boxci",
     BOXCI_PUBLIC_URL: env.BOXCI_PUBLIC_URL || "https://boxci.latha.org",
+    THINK_URL: env.THINK_URL || "https://think.latha.org",
+    BOXCI_THINK_SECRET: env.BOXCI_THINK_SECRET || "",
+    BOXCI_AGENT_BACKEND: "think",
     CLOUDFLARE_API_TOKEN: env.CLOUDFLARE_API_TOKEN || "",
     CLOUDFLARE_ACCOUNT_ID:
       env.CLOUDFLARE_ACCOUNT_ID || "2612967e82750619224e7446c4c41b0b",

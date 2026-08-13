@@ -33,14 +33,17 @@ steps:
 | Trigger | Set by | Handler |
 |---------|--------|---------|
 | `merge` | `BOXCI_TRIGGER=merge` | Repo `.boxci/pipeline.yml` (`on: merge`) |
-| `issue` | Garden issue webhook (issue COB is the event commit) | **Builtin** — cursor-agent → Radicle patch |
-| `patch-merge` | `POST /api/patches/merge` or Garden patch webhook (with `BOXCI_AUTO_MERGE_PATCHES=1`) | **Builtin** — `rad patch merge` into main |
+| `issue` | Garden issue webhook (issue COB is the event commit) | **Builtin** — Think sandbox (`think.latha.org`) → Radicle patch |
+| `patch-merge` | `POST /api/patches/merge` or Garden patch webhook (with `BOXCI_AUTO_MERGE_PATCHES=1`) | **Builtin** — Think sandbox clones the repo and fast-forwards `main` |
 
 Merge builds use your repo's `.boxci` steps. Issue handling is **built into boxci** — repos do not need `on: issue` or agent steps in `.boxci`.
 
 ## Merge a Radicle patch
 
-boxci can merge an open Radicle patch into `main` via the built-in `rad patch merge` builtin.
+boxci can merge an open Radicle patch into `main`. The CI workspace is a
+Cloudflare Sandbox owned by [Think](https://think.latha.org): boxci POSTs
+`/boxci/run` (`action: merge`), Think clones the repo at `/workspace`,
+fast-forwards `main`, and pushes. No Cursor CLI.
 
 ### `POST /api/patches/merge`
 
@@ -217,7 +220,7 @@ Requires on the boxci VM:
 Publishing is best-effort: failures are logged and **never** fail the pipeline.
 Disable with `BOXCI_RADICLE_JOB=0`.
 
-### Issue → cursor-agent → patch (builtin)
+### Issue → Think sandbox → patch (builtin)
 
 boxci ships a built-in Radicle issue workflow. No repo `.boxci` steps required.
 
@@ -227,11 +230,13 @@ boxci ships a built-in Radicle issue workflow. No repo `.boxci` steps required.
 | `POST /api/webhooks/garden/issue` | Explicit issue COB → builtin agent |
 | `POST /api/runs/from-repo` | Manual trigger with `"trigger":"issue"` and `"issue_id"` |
 
-**When cursor-agent runs:** only if the issue itself triggered the event (Garden push
+**When the Think sandbox agent runs:** only if the issue itself triggered the event (Garden push
 whose `after` / `commit` is that issue COB, or `/api/webhooks/garden/issue`, or an
-explicit manual `trigger=issue`).
+explicit manual `trigger=issue`). The repo is cloned into a Think sandbox
+(`/workspace`); the agent uses `sandbox_exec` / `sandbox_read` / `sandbox_write`
+instead of cursor-agent.
 
-**Agent script resolution:**
+**Agent script resolution:** (local fallback only, when `THINK_URL` is unset)
 1. Repo `scripts/buildkite/run-issue-agent.sh` if present (custom prompt, e.g. sleek)
 2. Else boxci bundled `runner/boxci/scripts/run-issue-agent.sh`
 
@@ -245,7 +250,7 @@ Issue webhook payload:
 }
 ```
 
-Dry-run agent prompt (no cursor-agent call):
+Dry-run agent prompt (no Think sandbox call):
 
 ```bash
 curl -X POST https://boxci.boxd.sh/api/runs/from-repo \
@@ -253,17 +258,18 @@ curl -X POST https://boxci.boxd.sh/api/runs/from-repo \
   -d '{"repo_url":"https://nandi.radicle.garden/z9mjPzpVK472QXaaP1picc5U9xBR.git","trigger":"issue","issue_id":"<id>","dry_run":true}'
 ```
 
-**VM secrets** (via `boxd env set` or OpenBao → `/etc/profile.d/boxd-env.sh`):
+**VM / Worker secrets:**
 
-- `CURSOR_API_KEY` — Cursor CLI
-- `RADICLE_SECRET_KEY` — dedicated CI Radicle identity (OpenSSH PEM; issue agent + Job COBs)
+- `THINK_URL` — Think origin (default `https://think.latha.org`)
+- `BOXCI_THINK_SECRET` — HMAC shared with Think (`X-Boxci-Secret`); wrangler secret
+- `RADICLE_SECRET_KEY` — dedicated CI Radicle identity (PEM); set on **Think** for sandbox `git push rad`
 - `RADICLE_PUBLIC_KEY` / `RAD_PASSPHRASE` — optional
-- `BOXCI_PUBLIC_URL` — optional; Job COB log link base (default `https://boxci.boxd.sh`)
+- `BOXCI_PUBLIC_URL` — optional; Job COB log link base (default `https://boxci.latha.org`)
 
 ### GitHub commit → Radicle patch (builtin)
 
 Cursor cloud agents (or any client) can ask boxci to **cherry-pick a GitHub commit**
-onto a Radicle repo and open a patch — no cursor-agent LLM step.
+onto a Radicle repo and open a patch — no Think LLM step.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -305,7 +311,7 @@ BOXCI_WORKSPACE_z9mjPzpVK472QXaaP1picc5U9xBR=/home/boxd/sleek
 | `GET /health` | Liveness |
 | `POST /api/patches/from-github` | Cherry-pick GitHub commit → Radicle patch |
 | `POST /api/webhooks/garden` | Garden merge webhook → repo `.boxci` merge steps |
-| `POST /api/webhooks/garden/issue` | Garden issue open → **builtin** cursor-agent |
+| `POST /api/webhooks/garden/issue` | Garden issue open → **builtin** Think sandbox agent |
 | `POST /api/runs/from-repo` | Manual trigger (`merge` / `issue` / `github-commit`) |
 | `POST /api/runs` | Legacy central pipelines in `pipelines/` |
 | `GET /api/runs` | List recent runs |

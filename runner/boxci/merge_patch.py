@@ -11,6 +11,12 @@ from pathlib import Path
 from boxci.repo import checkout_repo, repo_slug, resolve_repo_name, resolve_repo_url
 from boxci.runner import RunResult, StepResult
 from boxci.runs import store_run
+from boxci.think_sandbox import (
+    format_think_output,
+    run_think_job,
+    think_enabled,
+    think_job_ok,
+)
 
 _SCRIPTS = Path(__file__).resolve().parent / "scripts"
 _SCRIPT_NAME = "merge-patch.sh"
@@ -49,6 +55,7 @@ def build_merge_patch_env(
         "BOXCI_REPO_URL": repo_url,
         "BOXCI_REPO_SLUG": slug,
         "BOXCI_REPO_ID": repo_id or rid,
+        "BOXCI_AGENT_BACKEND": "think",
         "GIT_SHA": "",
         "GIT_BRANCH": branch,
         "GIT_TERMINAL_PROMPT": "0",
@@ -57,6 +64,7 @@ def build_merge_patch_env(
         "RADICLE_GARDEN_GIT": repo_url,
         "RADICLE_PATCH_ID": patch_id,
         "BOXCI_SCRIPTS": str(_SCRIPTS),
+        "THINK_URL": os.environ.get("THINK_URL", "https://think.latha.org"),
     }
     if merge_message:
         extra["PATCH_MERGE_MESSAGE"] = merge_message
@@ -80,6 +88,56 @@ def _public_run_env(env: dict[str, str]) -> dict[str, str]:
             continue
         out[k] = env[k]
     return out
+
+
+def _run_think_merge(
+    extra_env: dict[str, str],
+    *,
+    cwd: Path,
+    run_id: str | None = None,
+    label: str = "patch merge",
+    started_at: float | None = None,
+) -> RunResult:
+    run_id = run_id or str(uuid.uuid4())[:8]
+    env = dict(os.environ)
+    env.update({k: str(v) for k, v in extra_env.items() if v is not None})
+    env["BOXCI_RUN_ID"] = run_id
+    run = RunResult(
+        id=run_id,
+        pipeline="builtin:think-sandbox-merge",
+        status="running",
+        started_at=started_at or time.time(),
+        env=_public_run_env(env),
+    )
+    step = StepResult(key="patch-merge", label=label, status="running")
+    run.steps.append(step)
+    t0 = time.time()
+    try:
+        result = run_think_job(
+            {
+                "action": "merge",
+                "run_id": run_id,
+                "repo_url": extra_env["BOXCI_REPO_URL"],
+                "repo": extra_env.get("RADICLE_RID") or extra_env.get("BOXCI_REPO_ID"),
+                "branch": extra_env.get("GIT_BRANCH") or "main",
+                "patch_id": extra_env.get("RADICLE_PATCH_ID"),
+                "message": extra_env.get("PATCH_MERGE_MESSAGE"),
+                "dry_run": extra_env.get("RADICLE_AGENT_DRY_RUN") in ("1", "true", "yes"),
+            },
+            timeout_s=int(os.environ.get("BOXCI_THINK_TIMEOUT", "1200")),
+        )
+        step.output = format_think_output(result)
+        ok = think_job_ok(result)
+        step.exit_code = 0 if ok else 1
+        step.status = "passed" if ok else "failed"
+    except Exception as exc:  # noqa: BLE001
+        step.output = str(exc)
+        step.exit_code = 1
+        step.status = "failed"
+    step.duration_s = time.time() - t0
+    run.status = step.status
+    run.finished_at = time.time()
+    return run
 
 
 def _run_script(
@@ -183,7 +241,7 @@ def run_patch_merge(
     dry_run: bool = False,
     async_run: bool = False,
 ) -> tuple[Path, dict[str, str], RunResult]:
-    """Checkout Radicle repo and merge a patch into main via ``rad patch merge``."""
+    """Merge a Radicle patch into main via the Think sandbox (or local script)."""
     patch_id = (patch_id or "").strip()
     if not patch_id:
         raise ValueError("patch_id required")
@@ -197,12 +255,10 @@ def run_patch_merge(
 
     slug = repo_slug(repo_id or "", repo_url)
     workspace = _repo_workspace(boxci_root, slug)
-    checkout_repo(repo_url, workspace, branch=branch, sha=None)
+    if not think_enabled():
+        checkout_repo(repo_url, workspace, branch=branch, sha=None)
 
     script = _SCRIPTS / _SCRIPT_NAME
-    if not script.is_file():
-        raise FileNotFoundError(f"missing builtin script: {script}")
-
     env = build_merge_patch_env(
         workspace=workspace,
         repo_url=repo_url,
@@ -215,10 +271,54 @@ def run_patch_merge(
     )
 
     label = f"Merge patch {patch_id[:7]}"
+    if think_enabled():
+        def runner(extra, *, cwd, run_id=None, label=label, started_at=None):
+            return _run_think_merge(
+                extra, cwd=cwd, run_id=run_id, label=label, started_at=started_at
+            )
+        pipeline_script = Path("builtin:think-sandbox-merge")
+    else:
+        if not script.is_file():
+            raise FileNotFoundError(f"missing builtin script: {script}")
+
+        def runner(extra, *, cwd, run_id=None, label=label, started_at=None):
+            return _run_script(
+                script, extra, cwd=cwd, run_id=run_id, label=label, started_at=started_at
+            )
+        pipeline_script = script
+
     if async_run:
-        run = _run_script_async(script, env, cwd=workspace, label=label)
+        run = _run_merge_async(runner, env, cwd=workspace, label=label)
         store_run(run)
     else:
-        run = _run_script(script, env, cwd=workspace, label=label)
+        run = runner(env, cwd=workspace, label=label)
 
-    return script, env, run
+    return pipeline_script, env, run
+
+
+def _run_merge_async(
+    runner,
+    env: dict[str, str],
+    *,
+    cwd: Path,
+    label: str,
+) -> RunResult:
+    import threading
+
+    run_id = str(uuid.uuid4())[:8]
+    queued_at = time.time()
+    pending = RunResult(
+        id=run_id,
+        pipeline="builtin:think-sandbox-merge" if think_enabled() else f"builtin:{_SCRIPT_NAME}",
+        status="running",
+        started_at=queued_at,
+        env=_public_run_env(env),
+    )
+    store_run(pending)
+
+    def worker() -> None:
+        result = runner(env, cwd=cwd, run_id=run_id, label=label, started_at=queued_at)
+        store_run(result)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return pending

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Install cursor-agent (if missing), materialize Radicle CI identity, and
-# (optionally) build Radicle MCP for issue→agent runs.
+# Materialize Radicle CI identity (and, if BOXCI_AGENT_BACKEND=cursor, Cursor CLI).
+# Agent work defaults to think.latha.org sandbox — do not curl-install cursor-agent.
 #
 # Cluster secrets (Buildkite → Default cluster → Secrets; soft-loaded):
-#   CURSOR_API_KEY          — required for agent
+#   THINK_URL / BOXCI_THINK_SECRET — Think sandbox (default agent backend)
+#   CURSOR_API_KEY          — only if BOXCI_AGENT_BACKEND=cursor
 #   RADICLE_SECRET_KEY      — OpenSSH private key PEM for a *dedicated* CI identity
 #   RADICLE_PUBLIC_KEY      — optional; derived via ssh-keygen -y if missing
 #   RAD_PASSPHRASE          — optional; empty OK for empty-passphrase CI keys
@@ -84,35 +85,13 @@ bk_soft_secret() {
 }
 
 install_cursor_agent() {
-  local cmd
-  bk_export_cursor_path
-  if cmd="$(bk_cursor_agent_cmd)"; then
-    echo "[bootstrap] Cursor CLI already on PATH: ${cmd} ($(command -v "$cmd"))"
-    return 0
-  fi
-
-  echo "[bootstrap] installing Cursor CLI (curl https://cursor.com/install)..."
-  curl -fsSL https://cursor.com/install | bash
-  # Installer may land in ~/.local/bin and/or ~/.cursor/bin; re-export both.
-  bk_export_cursor_path
-
-  if ! cmd="$(bk_cursor_agent_cmd)"; then
-    echo "[bootstrap] warn: looking for agent binaries under common install dirs..." >&2
-    ls -la "${HOME}/.local/bin/agent" "${HOME}/.local/bin/cursor-agent" \
-      "${HOME}/.cursor/bin/agent" "${HOME}/.cursor/bin/cursor-agent" 2>&1 || true
-    bk_die "cursor-agent / agent not found after install (expected under ~/.local/bin or ~/.cursor/bin)"
-  fi
-  echo "[bootstrap] Cursor CLI installed: ${cmd} ($(command -v "$cmd"))"
+  echo "[bootstrap] skip Cursor CLI — agent work runs in think.latha.org sandbox"
+  return 0
 }
 
 cursor_agent_cmd() {
-  bk_export_cursor_path
-  local cmd
-  if cmd="$(bk_cursor_agent_cmd)"; then
-    echo "$cmd"
-    return 0
-  fi
-  bk_die "cursor-agent / agent not found after install"
+  echo "[bootstrap] cursor-agent is not used; set THINK_URL + BOXCI_THINK_SECRET" >&2
+  return 1
 }
 
 build_radicle_mcp() {
@@ -135,6 +114,10 @@ build_radicle_mcp() {
 }
 
 verify_auth() {
+  if [[ "${BOXCI_AGENT_BACKEND:-think}" == "think" ]]; then
+    echo "[bootstrap] agent backend=think (${THINK_URL:-https://think.latha.org}) — skip Cursor auth"
+    return 0
+  fi
   local cmd
   cmd="$(cursor_agent_cmd)"
   bk_soft_secret CURSOR_API_KEY --required
