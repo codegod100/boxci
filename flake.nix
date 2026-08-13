@@ -105,7 +105,7 @@
             '')
           ];
           config = {
-            Entrypoint = [ "boxci" ];
+            Entrypoint = [ "boxci-server" ];
             Env = [
               "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
               "GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"

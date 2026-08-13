@@ -3,7 +3,6 @@ import { Container, getContainer } from "@cloudflare/containers";
 export class BoxciContainer extends Container {
   // boxci-server listens on 8080
   defaultPort = 8080;
-  entrypoint = ["boxci-server"];
   sleepAfter = "30m";
 }
 
