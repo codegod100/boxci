@@ -45,8 +45,12 @@ if ! nix build .#dockerImage -L --out-link "$OUT_LINK"; then
 fi
 
 TARBALL="$(readlink -f "$OUT_LINK")"
-[[ -s "$TARBALL" ]] || {
-  echo "nix build produced empty image at $TARBALL" >&2
+if [[ -d "$TARBALL" ]]; then
+  TARBALL="$(find "$TARBALL" -type f \( -name '*.tar' -o -name '*.tar.gz' \) | head -1)"
+fi
+ls -lh "$OUT_LINK" "$TARBALL"
+[[ -e "$TARBALL" ]] || {
+  echo "nix build produced no image at $TARBALL" >&2
   exit 1
 }
 
