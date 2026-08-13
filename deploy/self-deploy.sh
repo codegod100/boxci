@@ -56,16 +56,13 @@ copy_out_link() {
 }
 
 echo "--- :nix: nix build .#dockerImage ($SHA)"
-if nix build .#dockerImage -L --out-link "$OUT_LINK"; then
-  copy_out_link || true
-fi
-if [[ ! -s "$ARCHIVE" ]]; then
-  echo "--- retrying with writable store /var/lib/boxci/nix"
-  mkdir -p /var/lib/boxci/nix
-  rm -f "$OUT_LINK" "$ARCHIVE"
-  nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
-  copy_out_link
-fi
+# dockerTools images include /homeless-shelter; nix refuses unsandboxed builds if it exists.
+# The container overlay also hides newly-realised /nix/store paths, so build into a private store.
+rm -rf /homeless-shelter
+mkdir -p /var/lib/boxci/nix
+rm -f "$OUT_LINK" "$ARCHIVE"
+nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
+copy_out_link
 [[ -s "$ARCHIVE" ]] || {
   echo "nix build produced no image archive" >&2
   exit 1
