@@ -144,12 +144,49 @@ def _run_from_payload(data: dict) -> RunResult | None:
     # Process died mid-run — don't keep "running" forever after restart.
     if run.status == "running":
         run.status = "failed"
-        run.finished_at = run.finished_at or time.time()
+        # Use started_at (not time.time()) so the duration doesn't show
+        # an absurd multi-hour span from start → restart for runs that
+        # actually died shortly after the pending state was persisted.
+        run.finished_at = run.finished_at or run.started_at
         for step in run.steps:
             if step.status == "running":
                 step.status = "failed"
                 if not (step.output or "").strip():
                     step.output = "(interrupted by boxci restart)\n"
+        # Ghost runs (interrupted before any step ran) get a synthetic
+        # step so the dashboard shows *why* it failed instead of "No steps yet".
+        if not run.steps:
+            run.steps.append(
+                StepResult(
+                    key="interrupted",
+                    label="(interrupted by boxci restart)",
+                    status="failed",
+                    exit_code=None,
+                    duration_s=0.0,
+                    output="(interrupted by boxci restart)\n",
+                )
+            )
+    # Detect previously-converted ghost runs: runs that were "running" on
+    # an earlier restart and got finished_at=time.time(), producing an
+    # absurd multi-hour duration with zero steps.  Re-classify them so the
+    # dashboard doesn't show a misleading 69h "failed" run.
+    if (
+        run.status == "failed"
+        and not run.steps
+        and run.finished_at is not None
+        and run.finished_at - run.started_at > 3600
+    ):
+        run.finished_at = run.started_at
+        run.steps.append(
+            StepResult(
+                key="interrupted",
+                label="(interrupted by boxci restart)",
+                status="failed",
+                exit_code=None,
+                duration_s=0.0,
+                output="(interrupted by boxci restart)\n",
+            )
+        )
     return run
 
 
