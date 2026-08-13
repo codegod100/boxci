@@ -9,6 +9,14 @@ export class BoxciContainer extends Container {
   envVars = {
     BOXCI_PORT: "8080",
   };
+
+  onStart() {
+    console.log("Container started");
+  }
+
+  onStop(params) {
+    console.log("Container stopped", JSON.stringify(params));
+  }
 }
 
 export default {
