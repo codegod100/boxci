@@ -83,6 +83,17 @@
             done
           '';
         };
+        boxciEntrypoint = pkgs.writeShellScriptBin "boxci-entrypoint" ''
+          set -euo pipefail
+          mkdir -p /var/lib/boxci /tmp
+          export HOME="''${HOME:-/var/lib/boxci}"
+          export BOXCI_ROOT="''${BOXCI_ROOT:-/var/lib/boxci}"
+          export BOXCI_PORT="''${BOXCI_PORT:-8080}"
+          export BOXCI_PUBLIC_URL="''${BOXCI_PUBLIC_URL:-https://boxci.latha.org}"
+          export NPM_CONFIG_CACHE="''${NPM_CONFIG_CACHE:-/var/lib/boxci/.npm}"
+          exec /bin/boxci-server "$@"
+        '';
+
         # Docker image bundling boxci + rad-job + runtime tools + Nix.
         dockerImage = pkgs.dockerTools.buildImage {
           name = "boxci";
@@ -90,6 +101,7 @@
           created = "now";
           copyToRoot = [
             boxci
+            boxciEntrypoint
             pkgs.nix
             # runtime tools that boxci scripts / rad-job need at run time
             pkgs.git
@@ -97,17 +109,39 @@
             pkgs.bash
             pkgs.coreutils
             pkgs.cacert
+            pkgs.curl
+            pkgs.gnugrep
+            pkgs.gnused
+            pkgs.gzip
+            pkgs.jq
+            pkgs.skopeo
+            pkgs.nodejs_22
+            # skopeo refuses to run without a signature policy
+            (pkgs.writeTextDir "etc/containers/policy.json" ''
+              {"default":[{"type":"insecureAcceptAnything"}]}
+            '')
+            # so curl/skopeo/nix agree on a well-known bundle path
+            (pkgs.runCommand "boxci-ssl-certs" { } ''
+              mkdir -p $out/etc/ssl/certs
+              ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-bundle.crt
+              ln -s ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs/ca-certificates.crt
+            '')
             # minimal nix config so `nix` works without a running daemon
             (pkgs.writeTextDir "etc/nix/nix.conf" ''
               experimental-features = nix-command flakes
               build-users-group =
-              ssl-cert-file = /etc/ssl/certs/ca-bundle.crt
+              sandbox = false
+              filter-syscalls = false
+              ssl-cert-file = ${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt
             '')
           ];
           config = {
-            Entrypoint = [ "/bin/boxci-server" ];
+            Entrypoint = [ "/bin/boxci-entrypoint" ];
             Env = [
               "PATH=/bin"
+              "HOME=/var/lib/boxci"
+              "BOXCI_ROOT=/var/lib/boxci"
+              "BOXCI_PUBLIC_URL=https://boxci.latha.org"
               "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
               "GIT_SSL_CAINFO=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
               "NIX_CONF_DIR=/etc/nix"

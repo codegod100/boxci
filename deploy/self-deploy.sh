@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Build the boxci OCI image, push it to Cloudflare's registry (no Docker daemon),
+# and wrangler-deploy the worker so the next instance boots the new image.
+set -euo pipefail
+
+: "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required for self-deploy}"
+
+ACCOUNT="${CLOUDFLARE_ACCOUNT_ID:-2612967e82750619224e7446c4c41b0b}"
+ROOT="${BOXCI_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
+SHA="${GIT_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
+IMAGE_NAME="boxci"
+WORKER_DIR="$ROOT/deploy/worker"
+OUT_LINK="${TMPDIR:-/tmp}/boxci-docker-image"
+ARCHIVE="${TMPDIR:-/tmp}/boxci-image.tar"
+HOME="${HOME:-/var/lib/boxci}"
+export HOME
+export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$HOME/.npm}"
+mkdir -p "$HOME" "$NPM_CONFIG_CACHE" "$(dirname "$OUT_LINK")"
+
+cd "$ROOT"
+
+echo "--- :nix: nix build .#dockerImage ($SHA)"
+nix_build() {
+  nix build .#dockerImage -L --out-link "$OUT_LINK"
+}
+
+if ! nix_build; then
+  echo "--- retrying with writable store /var/lib/boxci/nix"
+  mkdir -p /var/lib/boxci/nix
+  nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
+fi
+
+TARBALL="$(readlink -f "$OUT_LINK")"
+[[ -s "$TARBALL" ]] || {
+  echo "nix build produced empty image at $TARBALL" >&2
+  exit 1
+}
+
+if gzip -t "$TARBALL" 2>/dev/null; then
+  gzip -dc "$TARBALL" >"$ARCHIVE"
+else
+  cp -f "$TARBALL" "$ARCHIVE"
+fi
+
+echo "--- :npm: wrangler in $WORKER_DIR"
+cd "$WORKER_DIR"
+npm install --silent
+
+echo "--- :lock: registry credentials"
+CREDS_JSON="$(npx wrangler@latest containers registries credentials --push --json --expiration-minutes 30)"
+USER="$(echo "$CREDS_JSON" | jq -r '.username')"
+PASS="$(echo "$CREDS_JSON" | jq -r '.password')"
+HOST="$(echo "$CREDS_JSON" | jq -r '.registry_host // "registry.cloudflare.com"')"
+[[ -n "$USER" && -n "$PASS" && "$USER" != "null" && "$PASS" != "null" ]] || {
+  echo "failed to parse wrangler registry credentials" >&2
+  exit 1
+}
+
+REF="${HOST}/${ACCOUNT}/${IMAGE_NAME}:${SHA}"
+echo "--- :skopeo: copy docker-archive → docker://${REF}"
+skopeo copy \
+  --dest-creds "${USER}:${PASS}" \
+  "docker-archive:${ARCHIVE}" \
+  "docker://${REF}"
+
+echo "--- :cloudflare: wrangler deploy"
+sed -i "s|image = .*|image = \"${REF}\"|" wrangler.toml
+npx wrangler@latest deploy
+echo "deployed ${REF}"

@@ -1,5 +1,8 @@
 name: Build and Deploy Docker Image
 
+# Bootstrap deployer. After this image is live, Garden merge CI can self-deploy
+# via .boxci/pipeline.yml (deploy/self-deploy.sh). Keep this workflow for the
+# first rollout and as an emergency path (workflow_dispatch).
 on:
   push:
     branches: [main]
@@ -47,3 +50,5 @@ jobs:
           # Update wrangler.toml with the SHA-tagged image
           sed -i "s|image = .*|image = \"registry.cloudflare.com/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}\"|" wrangler.toml
           npx wrangler@latest deploy
+          # Worker secret is forwarded into the container for self-deploy.
+          printf '%s' "$CLOUDFLARE_API_TOKEN" | npx wrangler@latest secret put CLOUDFLARE_API_TOKEN

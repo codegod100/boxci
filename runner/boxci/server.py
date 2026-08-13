@@ -6,6 +6,9 @@ import hashlib
 import hmac
 import json
 import os
+import threading
+import time
+import urllib.request
 from pathlib import Path
 
 from flask import Flask, jsonify, request, Response, send_file, send_from_directory
@@ -530,10 +533,34 @@ def garden_issue_webhook():
     return _webhook_response(result, accepted=True)
 
 
+def _start_keepalive() -> None:
+    """Ping the public health URL while a run is in flight so Cloudflare does
+    not sleep the container after the webhook request returns."""
+    url = os.environ.get("BOXCI_PUBLIC_URL", "").rstrip("/")
+    if not url:
+        return
+
+    health = f"{url}/health"
+
+    def loop() -> None:
+        from boxci.runs import RUNS
+
+        while True:
+            time.sleep(50)
+            try:
+                if any(getattr(run, "status", "") == "running" for run in RUNS.values()):
+                    urllib.request.urlopen(health, timeout=15).read()
+            except Exception:  # noqa: BLE001 — never crash the server
+                pass
+
+    threading.Thread(target=loop, daemon=True, name="boxci-keepalive").start()
+
+
 def main() -> None:
     host = os.environ.get("BOXCI_HOST", "0.0.0.0")
     port = int(os.environ.get("BOXCI_PORT", "8080"))
     print(f"boxci server on http://{host}:{port} (root={ROOT})")
+    _start_keepalive()
     app.run(host=host, port=port, threaded=True)
 
 

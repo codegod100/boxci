@@ -1,0 +1,25 @@
+# Repo-local merge CI. Garden push to main clones this commit and runs it.
+# Deploy needs CLOUDFLARE_API_TOKEN in the container (wrangler secret, passed
+# through the Worker). GitHub Actions remains the bootstrap deployer.
+name: boxci
+on:
+  - merge
+
+steps:
+  - label: ":white_check_mark: Check"
+    key: check
+    command: |
+      set -euo pipefail
+      cd "${BOXCI_REPO_ROOT:?}"
+      test -f flake.nix
+      test -f deploy/self-deploy.sh
+      test -f deploy/worker/wrangler.toml
+      echo "ok $(git rev-parse --short HEAD)"
+
+  - label: ":rocket: Self-deploy"
+    key: deploy
+    depends_on: check
+    command: |
+      set -euo pipefail
+      cd "${BOXCI_REPO_ROOT:?}"
+      bash deploy/self-deploy.sh
