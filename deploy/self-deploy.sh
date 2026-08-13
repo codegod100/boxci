@@ -10,14 +10,15 @@ ROOT="${BOXCI_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
 SHA="${GIT_SHA:-$(git -C "$ROOT" rev-parse HEAD)}"
 IMAGE_NAME="boxci"
 WORKER_DIR="$ROOT/deploy/worker"
-OUT_LINK="${TMPDIR:-/tmp}/boxci-docker-image"
-ARCHIVE="${TMPDIR:-/tmp}/boxci-image.tar"
+STAGE="${BOXCI_ROOT:-/var/lib/boxci}/self-deploy"
+OUT_LINK="$STAGE/docker-image"
+ARCHIVE="$STAGE/boxci-image.tar"
 HOME="${HOME:-/var/lib/boxci}"
 export HOME
 export NPM_CONFIG_CACHE="${NPM_CONFIG_CACHE:-$HOME/.npm}"
 export NIX_CONFIG="${NIX_CONFIG:+${NIX_CONFIG}
 }sandbox = false"
-mkdir -p "$HOME" "$NPM_CONFIG_CACHE" "$(dirname "$OUT_LINK")"
+mkdir -p "$HOME" "$NPM_CONFIG_CACHE" "$STAGE"
 
 have_tools() {
   command -v skopeo >/dev/null \
@@ -37,28 +38,38 @@ fi
 
 cd "$ROOT"
 
-echo "--- :nix: nix build .#dockerImage ($SHA)"
-if ! nix build .#dockerImage -L --out-link "$OUT_LINK"; then
-  echo "--- retrying with writable store /var/lib/boxci/nix"
-  mkdir -p /var/lib/boxci/nix
-  nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
-fi
-
-TARBALL="$(readlink -f "$OUT_LINK")"
-if [[ -d "$TARBALL" ]]; then
-  TARBALL="$(find "$TARBALL" -type f \( -name '*.tar' -o -name '*.tar.gz' \) | head -1)"
-fi
-ls -lh "$OUT_LINK" "$TARBALL"
-[[ -e "$TARBALL" ]] || {
-  echo "nix build produced no image at $TARBALL" >&2
-  exit 1
+copy_out_link() {
+  # Do not readlink -f into /nix/store: the overlay can hide the store path
+  # even after nix reports the build finished.
+  ls -lh "$OUT_LINK" || return 1
+  if [[ -L "$OUT_LINK" && ! -e "$OUT_LINK" ]]; then
+    echo "dangling gc root $OUT_LINK -> $(readlink "$OUT_LINK")"
+    return 1
+  fi
+  if gzip -t "$OUT_LINK" 2>/dev/null; then
+    gzip -dc "$OUT_LINK" >"$ARCHIVE"
+  else
+    cp -L "$OUT_LINK" "$ARCHIVE"
+  fi
+  ls -lh "$ARCHIVE"
+  [[ -s "$ARCHIVE" ]]
 }
 
-if gzip -t "$TARBALL" 2>/dev/null; then
-  gzip -dc "$TARBALL" >"$ARCHIVE"
-else
-  cp -f "$TARBALL" "$ARCHIVE"
+echo "--- :nix: nix build .#dockerImage ($SHA)"
+if nix build .#dockerImage -L --out-link "$OUT_LINK"; then
+  copy_out_link || true
 fi
+if [[ ! -s "$ARCHIVE" ]]; then
+  echo "--- retrying with writable store /var/lib/boxci/nix"
+  mkdir -p /var/lib/boxci/nix
+  rm -f "$OUT_LINK" "$ARCHIVE"
+  nix build --store /var/lib/boxci/nix .#dockerImage -L --out-link "$OUT_LINK"
+  copy_out_link
+fi
+[[ -s "$ARCHIVE" ]] || {
+  echo "nix build produced no image archive" >&2
+  exit 1
+}
 
 echo "--- :npm: wrangler in $WORKER_DIR"
 cd "$WORKER_DIR"
