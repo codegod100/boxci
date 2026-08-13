@@ -1,5 +1,5 @@
 name = "boxci"
-main = "worker/src/worker.js"
+main = "src/worker.js"
 compatibility_date = "2025-03-01"
 
 # Container configuration — image is set dynamically in CI
