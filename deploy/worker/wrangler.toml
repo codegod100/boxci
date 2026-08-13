@@ -2,16 +2,22 @@ name = "boxci"
 main = "worker/src/worker.js"
 compatibility_date = "2025-03-01"
 
-# Container configuration
+# Container configuration — image is set dynamically in CI
+# (see .github/workflows/docker-deploy.yml)
 [[containers]]
 class_name = "BoxciContainer"
-image = "./Dockerfile"
+image = "registry.cloudflare.com/2612967e82750619224e7446c4c41b0b/boxci:latest"
 max_instances = 1
 
 # Durable Object binding for the container
 [[durable_objects.bindings]]
 name = "BOXCI_CONTAINER"
 class_name = "BoxciContainer"
+
+# Export the Durable Object
+[exports.BoxciContainer]
+type = "durable-object"
+storage = "sqlite"
 
 # Custom domain
 [[routes]]

@@ -28,6 +28,12 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Push image to Cloudflare registry
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler@latest containers push ${{ env.IMAGE_NAME }}:${{ github.sha }}
+
       - name: Install worker dependencies
         working-directory: deploy/worker
         run: npm install
@@ -37,4 +43,7 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: npx wrangler@latest deploy
+        run: |
+          # Update wrangler.toml with the SHA-tagged image
+          sed -i "s|image = .*|image = \"registry.cloudflare.com/${{ secrets.CLOUDFLARE_ACCOUNT_ID }}/${{ env.IMAGE_NAME }}:${{ github.sha }}\"|" wrangler.toml
+          npx wrangler@latest deploy
