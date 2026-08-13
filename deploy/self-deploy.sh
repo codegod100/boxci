@@ -39,17 +39,25 @@ fi
 cd "$ROOT"
 
 copy_out_link() {
-  # Do not readlink -f into /nix/store: the overlay can hide the store path
-  # even after nix reports the build finished.
+  # --store $dir makes --out-link point at /nix/store/… (logical). The bytes
+  # live at $dir/nix/store/… on the host overlay.
   ls -lh "$OUT_LINK" || return 1
+  local src="$OUT_LINK"
   if [[ -L "$OUT_LINK" && ! -e "$OUT_LINK" ]]; then
-    echo "dangling gc root $OUT_LINK -> $(readlink "$OUT_LINK")"
-    return 1
+    local target
+    target="$(readlink "$OUT_LINK")"
+    echo "dangling gc root $OUT_LINK -> $target"
+    if [[ "$target" == /nix/store/* && -e "/var/lib/boxci/nix$target" ]]; then
+      src="/var/lib/boxci/nix$target"
+      echo "using physical store path $src"
+    else
+      return 1
+    fi
   fi
-  if gzip -t "$OUT_LINK" 2>/dev/null; then
-    gzip -dc "$OUT_LINK" >"$ARCHIVE"
+  if gzip -t "$src" 2>/dev/null; then
+    gzip -dc "$src" >"$ARCHIVE"
   else
-    cp -L "$OUT_LINK" "$ARCHIVE"
+    cp -L "$src" "$ARCHIVE"
   fi
   ls -lh "$ARCHIVE"
   [[ -s "$ARCHIVE" ]]
