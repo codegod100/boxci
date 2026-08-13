@@ -1,0 +1,19 @@
+name = "boxci"
+main = "worker/src/worker.js"
+compatibility_date = "2025-03-01"
+
+# Container configuration
+[[containers]]
+class_name = "BoxciContainer"
+image = "./Dockerfile"
+max_instances = 1
+
+# Durable Object binding for the container
+[[durable_objects.bindings]]
+name = "BOXCI_CONTAINER"
+class_name = "BoxciContainer"
+
+# Custom domain
+[[routes]]
+pattern = "boxci.latha.org"
+custom_domain = true
